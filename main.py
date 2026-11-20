@@ -36,12 +36,21 @@ EXTRA = {
 NUM = {d: EXTRA[d] for d in "1234567890"}
 SYM = {ch: EXTRA[ch] for ch in ".,?!-/():;=+\"'@&_"}
 LANGS = {"EN": EN, "RU": RU, "NUM": NUM, "SYM": SYM}
+# Совмещённые деревья: буквы + цифры + символы в одном дереве (переключается только язык букв)
+LANGS["ALL_EN"] = {**EN, **NUM, **SYM}
+LANGS["ALL_RU"] = {**RU, **NUM, **SYM}
+EXTRA_CODES = set(NUM.values()) | set(SYM.values())
+
+
+def eff_lang(st):
+    """Какое дерево реально показываем: с учётом кнопки совмещения."""
+    return "ALL_" + st["lang"] if st["combo"] and st["lang"] in ("EN", "RU") else st["lang"]
 
 
 def tree_codes(name):
     """Какие узлы рисуем в дереве. Для цифр добавляем безымянные промежуточные узлы."""
     d = LANGS[name]
-    if name not in ("NUM", "SYM"):
+    if name in ("EN", "RU"):
         return set(d.values())
     out = set()
     for code in d.values():
@@ -111,8 +120,8 @@ def build_layout(codes):
 
 def make_layout(name):
     pos = build_layout(tree_codes(name))
-    if name == "SYM":                      # дерево символов глубокое — кладём его набок
-        pos = {code: (r, cc) for code, (cc, r) in pos.items()}
+    if name == "SYM" or name.startswith("ALL_"):     # глубокие деревья — кладём набок
+        pos = {code: (r, -cc) for code, (cc, r) in pos.items()}     # точки — вверх, тире — вниз
     return pos
 
 
@@ -201,7 +210,7 @@ def dark_titlebar(widget):
 DEFAULTS = dict(
     lang="EN", dot_dash_ms=220, letter_gap_ms=800, auto_space=True, word_gap_ms=2000,
     sound=True, freq=700, volume=35, key="ctrl", dual_map="ctrl_dash", space_dbl_ms=350,
-    uppercase=True, show_letters=True, on_top=False, ui_lang="en",
+    uppercase=True, show_letters=True, on_top=False, ui_lang="en", combo=False,
 )
 K_CTRL, K_ALT, K_SPACE = int(Qt.Key.Key_Control), int(Qt.Key.Key_Alt), int(Qt.Key.Key_Space)
 KEYS = {
@@ -229,6 +238,7 @@ I18N = {
     "en": {
         "brand_sub": "type text in Morse code",
         "tip_game": "Game", "tip_settings": "Settings",
+        "tip_combo": "Letters + digits + symbols in one tree",
         "tip_clear": "Clear all", "tip_copy_img": "Copy as image",
         "card_text": "TEXT", "card_morse": "MORSE",
         "ph_text": "Text will appear here…", "ph_morse": "•—•  code will appear here",
@@ -271,6 +281,7 @@ I18N = {
     "ru": {
         "brand_sub": "ввод текста азбукой Морзе",
         "tip_game": "Игра", "tip_settings": "Настройки",
+        "tip_combo": "Буквы + цифры + символы в одном дереве",
         "tip_clear": "Очистить всё", "tip_copy_img": "Копировать как картинку",
         "card_text": "ТЕКСТ", "card_morse": "МОРЗЕ",
         "ph_text": "Текст появится здесь…", "ph_morse": "•—•  код появится здесь",
@@ -344,6 +355,8 @@ class Settings:
                 self.d["key"] = DEFAULTS["key"]
             if self.d["lang"] not in LANGS:
                 self.d["lang"] = "EN"
+            if self.d["combo"] and self.d["lang"] not in ("EN", "RU"):
+                self.d["lang"] = "EN"
             if self.d["ui_lang"] not in ("en", "ru"):
                 self.d["ui_lang"] = "en"
             if self.d["dual_map"] not in ("ctrl_dash", "alt_dash"):
@@ -364,9 +377,9 @@ class Settings:
             pass
 
     def reset(self):
-        lang, ui = self.d["lang"], self.d["ui_lang"]      # язык ввода и язык интерфейса не сбрасываем
+        keep = {k: self.d[k] for k in ("lang", "ui_lang", "combo")}   # язык ввода, интерфейса и режим дерева не сбрасываем
         self.d = dict(DEFAULTS)
-        self.d["lang"], self.d["ui_lang"] = lang, ui
+        self.d.update(keep)
 
 
 # ---------- звук ----------
@@ -477,7 +490,7 @@ class Engine(QObject):
         self.tt.timeout.connect(self._tap_end)
         self.tap_sym, self.tap_t0, self.tap_dur, self.tap_until = "", 0.0, 1, 0.0
         self.space_t = -10.0
-        self.set_lang(st["lang"])
+        self.set_lang(eff_lang(st))
 
     # --- служебное ---
     def set_lang(self, lang):
@@ -704,6 +717,26 @@ def icon_gamepad(p, r, color):
     p.drawEllipse(QPointF(body.right() - 4.8, cy + 1.6), 1.5, 1.5)
 
 
+def icon_combo(p, r, color):
+    """Три источника (буквы / цифры / символы) сливаются в одну линию."""
+    pen = QPen(color, 1.6)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.setBrush(NOBRUSH)
+    cy = r.center().y()
+    jx = r.left() + 9.5
+    for y in (r.top() + 3.0, cy, r.bottom() - 3.0):
+        path = QPainterPath(QPointF(r.left() + 2.5, y))
+        path.cubicTo(QPointF(r.left() + 7, y), QPointF(r.left() + 6, cy), QPointF(jx, cy))
+        p.drawPath(path)
+    p.drawLine(QPointF(jx, cy), QPointF(r.right() - 6, cy))
+    p.setPen(NOPEN)
+    p.setBrush(color)
+    for y in (r.top() + 3.0, cy, r.bottom() - 3.0):
+        p.drawEllipse(QPointF(r.left() + 2.5, y), 2.0, 2.0)
+    p.drawRoundedRect(QRectF(r.right() - 7.5, cy - 2.2, 8.5, 4.4), 2.2, 2.2)
+
+
 class FlatButton(QWidget):
     clicked = Signal()
 
@@ -793,6 +826,26 @@ class Segmented(QWidget):
         self.anim.valueChanged.connect(self._on)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.disabled = set()               # недоступные пункты (затемнены, не нажимаются)
+        self._fade, self._fade_from = {}, {}
+        self.fade_anim = QVariantAnimation(self)
+        self.fade_anim.setDuration(220)
+        self.fade_anim.setStartValue(0.0)
+        self.fade_anim.setEndValue(1.0)
+        self.fade_anim.valueChanged.connect(self._fade_step)
+
+    def set_disabled(self, keys):
+        keys = set(keys)
+        self._fade_from = {k: self._fade.get(k, 0.0) for k, _ in self.items}
+        self.disabled = keys
+        self.fade_anim.stop()
+        self.fade_anim.start()
+
+    def _fade_step(self, t):
+        for k, _ in self.items:
+            a, b = self._fade_from.get(k, 0.0), (1.0 if k in self.disabled else 0.0)
+            self._fade[k] = a + (b - a) * float(t)
+        self.update()
 
     def _measure(self):
         fm = QFontMetricsF(font(13, W_SEMI))
@@ -827,6 +880,8 @@ class Segmented(QWidget):
         i = int((e.position().x() - 4) // self.seg)
         i = max(0, min(len(self.items) - 1, i))
         key = self.items[i][0]
+        if key in self.disabled:
+            return
         if key != self.value:
             self.set_value(key)
             self.changed.emit(key)
@@ -849,9 +904,10 @@ class Segmented(QWidget):
         p.setBrush(g)
         p.drawRoundedRect(k, kh / 2, kh / 2)
         p.setFont(font(13, W_SEMI))
-        for i, (_, text) in enumerate(self.items):
+        for i, (key, text) in enumerate(self.items):
             t = 1.0 - min(1.0, abs(i - self._pos))
-            p.setPen(mix(DIM, "#FFFFFF", t))
+            f = self._fade.get(key, 0.0)
+            p.setPen(mix(mix(DIM, "#FFFFFF", t), SURF, 0.72 * f))
             p.drawText(QRectF(4 + i * self.seg, 4, self.seg, kh), AL_C, text)
 
 
@@ -921,7 +977,7 @@ class Brand(QWidget):
         p.drawRoundedRect(QRectF(16, 17, 12, 6), 3, 3)
         p.setFont(font(18, W_SEMI))
         p.setPen(col(TXT))
-        p.drawText(QRectF(46, 1, 150, 22), AL_L, "PhMorse v1.0.0")
+        p.drawText(QRectF(46, 1, 150, 22), AL_L, "PhMorse v1.0.1")
         p.setFont(font(11, W_NORMAL))
         p.setPen(col(DIM))
         p.drawText(QRectF(46, 22, 150, 16), AL_L, tr("brand_sub"))
@@ -1165,6 +1221,7 @@ class TreeView(QWidget):
 
     def set_lang(self, lang):
         self.letters = {code: ch for ch, code in LANGS[lang].items()}
+        self.extra = EXTRA_CODES if lang.startswith("ALL_") else set()   # цифры/символы в совмещённом дереве
         self.pos = LAYOUTS[lang]
         cs = [c for c, _ in self.pos.values()]
         rs = [r for _, r in self.pos.values()]
@@ -1297,7 +1354,8 @@ class TreeView(QWidget):
                 pass                     # корень — просто пустой круг
             elif code in self.letters and self.letters_visible():
                 p.setFont(f_let)
-                p.setPen(mix(MID, "#FFFFFF", min(1.0, gg * 1.2)))
+                base = "#8FB4F5" if code in self.extra else MID      # цифры и символы — голубоватые
+                p.setPen(mix(base, "#FFFFFF", min(1.0, gg * 1.2)))
                 p.drawText(rect, AL_C, self.letters[code])
 
 
@@ -1690,6 +1748,16 @@ GAME_POOLS = {
     ("SYM", 0): ["?", "!", "?!", "...", ".,", "()", "+=", "@", "&", "_", "-", ":;", "/", "!!!", "???"],
     ("SYM", 1): ["1+1=2", "(2-1)", "!?!?", "3/4=.75", "12:30", "5-2=3", "@1_2", "(+)", '"5"', "9-5=4", "7&3"],
 }
+GAME_POOLS[("ALL_EN", 0)] = GAME_POOLS[("EN", 0)] + [
+    "R2D2", "C3PO", "B52", "F16", "K9", "4K", "3D", "Q&A", "R&D", "WI-FI", "E-MAIL", "7UP", "A1", "H2O", "CO2"]
+GAME_POOLS[("ALL_EN", 1)] = GAME_POOLS[("EN", 1)] + [
+    "CALL 911", "ROOM 101", "AGENT 007", "DON'T PANIC!", "WHAT'S UP?", "1+1=2", "DIAL 112", "R2-D2",
+    "AT 8:30 SHARP", "HELLO, WORLD!", "PAGE 3/4", "SOS 112"]
+GAME_POOLS[("ALL_RU", 0)] = GAME_POOLS[("RU", 0)] + [
+    "Т-34", "Ф-16", "3Д", "4К", "1С", "Н2О", "СО2", "ТОП-10", "АК-47", "МИР-2"]
+GAME_POOLS[("ALL_RU", 1)] = GAME_POOLS[("RU", 1)] + [
+    "ЗВОНИ 112", "КОМНАТА 101", "ПРИВЕТ, МИР!", "КАК ДЕЛА?", "ЧТО? ГДЕ? КОГДА?", "2+2=4", "ДОМ 12/3",
+    "В 8:30 У ВОКЗАЛА", "ДА, ЭТО Я!"]
 GREEN = "#86EFAC"
 
 
@@ -1731,7 +1799,7 @@ class GameBar(QWidget):
 
     def place(self):
         w, y = self.width(), 80
-        a = self.engine.lang in ("EN", "RU")
+        a = self.engine.lang in ("EN", "RU", "ALL_EN", "ALL_RU")
         self.seg_a.setVisible(a)
         self.seg_b.setVisible(not a)
         seg = self.seg_a if a else self.seg_b
@@ -1869,6 +1937,7 @@ class MainWindow(QWidget):
         self.tone = Tone()
         self.engine = Engine(self.st, self.tone)
         self.setWindowTitle("PhMorse")
+        self._letters = self.st["lang"] if self.st["lang"] in ("EN", "RU") else "EN"
         self.min_h = 730
         self.setMinimumSize(580, self.min_h)
         avail = QGuiApplication.primaryScreen().availableGeometry().height()
@@ -1886,11 +1955,18 @@ class MainWindow(QWidget):
         self.lang = Segmented([("EN", "ENG"), ("RU", "RUS"), ("NUM", "123"), ("SYM", "!@#")],
                               self.st["lang"], pad=18)
         head.addWidget(self.lang, 0, Qt.AlignmentFlag.AlignVCenter)
-        head.addSpacing(10)
+        self.lang.set_disabled(("NUM", "SYM") if self.st["combo"] else ())
+        self.lang._fade_step(1.0)
+        head.addSpacing(8)
+        self.btn_combo = FlatButton(icon=icon_combo)
+        self.btn_combo.setToolTip(tr("tip_combo"))
+        self.btn_combo.active = bool(self.st["combo"])
+        head.addWidget(self.btn_combo, 0, Qt.AlignmentFlag.AlignVCenter)
+        head.addSpacing(4)
         self.btn_game = FlatButton(icon=icon_gamepad)
         self.btn_game.setToolTip(tr("tip_game"))
         head.addWidget(self.btn_game, 0, Qt.AlignmentFlag.AlignVCenter)
-        head.addSpacing(8)
+        head.addSpacing(4)
         self.gear = FlatButton(icon=icon_sliders)
         self.gear.setToolTip(tr("tip_settings"))
         head.addWidget(self.gear, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -1913,6 +1989,7 @@ class MainWindow(QWidget):
         self.lang.changed.connect(self.set_lang)
         self.gear.clicked.connect(self.open_settings)
         self.btn_game.clicked.connect(self.toggle_game)
+        self.btn_combo.clicked.connect(self.toggle_combo)
         self.game.exit_requested.connect(self.toggle_game)
         self.pad.pressed.connect(self.engine.press)
         self.pad.released.connect(self.engine.release)
@@ -1940,6 +2017,7 @@ class MainWindow(QWidget):
 
     def retranslate(self):
         self.btn_game.setToolTip(tr("tip_game"))
+        self.btn_combo.setToolTip(tr("tip_combo"))
         self.gear.setToolTip(tr("tip_settings"))
         self.card.retranslate()
         self.game.retranslate()
@@ -1947,11 +2025,31 @@ class MainWindow(QWidget):
 
     def set_lang(self, lang):
         self.st["lang"] = lang
+        if lang in ("EN", "RU"):
+            self._letters = lang
         self.st.save()
-        self.engine.set_lang(lang)
-        self.tree.set_lang(lang)
+        self._apply_tree()
+
+    def _apply_tree(self):
+        key = eff_lang(self.st)
+        self.engine.set_lang(key)
+        self.tree.set_lang(key)
         self.game.lang_changed()
         self.setFocus()
+
+    def toggle_combo(self):
+        """Буквы + цифры + символы в одном дереве; в этом режиме меняется только язык букв."""
+        self.engine.abort()
+        on = not self.st["combo"]
+        self.st["combo"] = on
+        if on and self.st["lang"] not in ("EN", "RU"):
+            self.st["lang"] = self._letters
+            self.lang.set_value(self._letters)
+        self.lang.set_disabled(("NUM", "SYM") if on else ())
+        self.btn_combo.active = on
+        self.btn_combo.update()
+        self.st.save()
+        self._apply_tree()
 
     def toggle_game(self):
         self.engine.abort()
