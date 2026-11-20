@@ -977,7 +977,7 @@ class Brand(QWidget):
         p.drawRoundedRect(QRectF(16, 17, 12, 6), 3, 3)
         p.setFont(font(18, W_SEMI))
         p.setPen(col(TXT))
-        p.drawText(QRectF(46, 1, 150, 22), AL_L, "PhMorse v1.0.1")
+        p.drawText(QRectF(46, 1, 150, 22), AL_L, "PhMorse v1.0.2")
         p.setFont(font(11, W_NORMAL))
         p.setPen(col(DIM))
         p.drawText(QRectF(46, 22, 150, 16), AL_L, tr("brand_sub"))
@@ -1210,16 +1210,52 @@ class OutputCard(QWidget):
 
 
 # ---------- дерево ----------
+def _lerp(a, b, t):
+    return a + (b - a) * t
+
+
+def _smooth(t):
+    t = max(0.0, min(1.0, t))
+    return t * t * (3 - 2 * t)
+
+
+def _ease(t):
+    """InOutCubic — мягкий старт и мягкая остановка."""
+    t = max(0.0, min(1.0, t))
+    return 4 * t * t * t if t < 0.5 else 1 - (-2 * t + 2) ** 3 / 2
+
+
+def with_alpha(c, a):
+    c = QColor(c)
+    c.setAlpha(int(max(0, min(255, c.alpha() * a))))
+    return c
+
+
 class TreeView(QWidget):
+    ANIM_S = 0.65          # длительность анимации смены дерева, сек
+
     def __init__(self, engine, st, parent=None):
         super().__init__(parent)
         self.engine, self.st = engine, st
         self.glow, self.hot = {}, 0.0
         self.override_letters = None      # игра может принудительно скрыть/показать буквы
+        self.pos, self.letters, self.extra = {}, {}, set()
+        self._lang = None
+        self._from = None                 # снимок сцены, из которой едем
+        self._ghost = {}                  # свечение уходящих узлов
+        self._t0 = None                   # время старта анимации
         self.setMinimumHeight(280)
         self.set_lang(engine.lang)
 
     def set_lang(self, lang):
+        if lang == self._lang and self.pos:
+            self.update()
+            return
+        old_scene = old_glow = None
+        if self._lang is not None and self.isVisible() and self.width() > 50:
+            old_scene = self._scene()[0]            # текущий кадр (даже если прошлая анимация не закончилась)
+            old_glow = {**self._ghost, **self.glow}
+        self._lang = lang
         self.letters = {code: ch for ch, code in LANGS[lang].items()}
         self.extra = EXTRA_CODES if lang.startswith("ALL_") else set()   # цифры/символы в совмещённом дереве
         self.pos = LAYOUTS[lang]
@@ -1227,11 +1263,20 @@ class TreeView(QWidget):
         rs = [r for _, r in self.pos.values()]
         self.minc, self.minr = min(cs), min(rs)
         self.ncols, self.nrows = max(cs) - min(cs) + 1, max(rs) - min(rs) + 1
-        self.glow = {}
+        if old_scene is not None:
+            self._from, self._ghost = old_scene, old_glow
+            self._t0 = time.perf_counter()
+            self.glow = {c: g for c, g in self.glow.items() if c in self.pos}
+        else:
+            self._from, self._ghost, self._t0 = None, {}, None
+            self.glow = {}
         self.update()
 
     def tick(self):
         e, now = self.engine, time.perf_counter()
+        anim = self._t0 is not None
+        if anim and now - self._t0 >= self.ANIM_S:
+            self._t0, self._from, self._ghost = None, None, {}     # анимация закончилась (последний кадр рисуем ниже)
         path = []
         for i in range(len(e.seq) + 1):
             if e.seq[:i] in self.pos:
@@ -1249,7 +1294,7 @@ class TreeView(QWidget):
         if e.flash_code in self.pos:
             hot = max(0.0, 1.0 - (now - e.flash_t) / 0.55)
             tgt[e.flash_code] = max(tgt.get(e.flash_code, 0), hot)
-        dirty = (hot != self.hot) or hot > 0
+        dirty = (hot != self.hot) or hot > 0 or anim
         self.hot = hot
         for code in self.pos:
             t, g = tgt.get(code, 0.0), self.glow.get(code, 0.0)
@@ -1273,6 +1318,76 @@ class TreeView(QWidget):
         gw, gh = pitch * self.ncols, pitch * self.nrows
         return area.left() + (area.width() - gw) / 2, area.top() + (area.height() - gh) * 0.4, pitch
 
+    # ---------- сцена: геометрия узлов в пикселях ----------
+    def _target(self):
+        """Где узлы текущего дерева должны стоять в покое: {код: x, y, w, h, a, lets}."""
+        x0, y0, pitch = self._grid()
+        pts = {code: QPointF(x0 + (c - self.minc + .5) * pitch, y0 + (rr - self.minr + .5) * pitch)
+               for code, (c, rr) in self.pos.items()}
+        L0, T0, R0 = pitch * 0.90, pitch * 0.58, pitch * 0.36
+        out = {}
+        for code, pt in pts.items():
+            sc = 1.0 if (not code or code in self.letters) else 0.6    # безымянные узлы цифрового дерева
+            L, T, R = L0 * sc, T0 * sc, R0 * sc
+            if not code or code[-1] == ".":
+                w = h = 2 * R
+            else:
+                par = pts[code[:-1]]
+                w, h = (T, L) if abs(par.x() - pt.x()) < 1 else (L, T)     # пришли по вертикали / по горизонтали
+            lets = []
+            if code and code in self.letters:
+                lets = [(self.letters[code], 1.0, "#8FB4F5" if code in self.extra else MID)]
+            out[code] = dict(x=pt.x(), y=pt.y(), w=w, h=h, a=1.0, lets=lets)
+        return out, pitch
+
+    def _scene(self):
+        """Текущий кадр: (сцена, pitch, прогресс 0..1)."""
+        T, pitch = self._target()
+        if self._from is not None and self._t0 is not None:
+            pr = (time.perf_counter() - self._t0) / self.ANIM_S
+            if pr < 1.0:
+                return self._blend(self._from, T, max(0.0, pr)), pitch, max(0.0, pr)
+        return T, pitch, 1.0
+
+    def _blend(self, F, T, pr):
+        """Смешивает старую сцену F и новую T:
+        общие узлы плавно едут, новые вырастают из родителя, ушедшие втягиваются в родителя;
+        старые символы гаснут в первой половине, новые проявляются во второй."""
+        e = _ease(pr)
+        fo = _smooth(pr / 0.45)               # старые символы гаснут
+        fi = _smooth((pr - 0.45) / 0.55)      # новые символы проявляются
+        fa = _smooth(pr * 1.5)                # появление / исчезновение самих узлов
+        out = {}
+
+        def anc(code):                        # ближайший уже построенный предок
+            code = code[:-1]
+            while code and code not in out:
+                code = code[:-1]
+            return out[code]
+
+        for code in sorted(T, key=len):
+            t, f = T[code], F.get(code)
+            if f is not None:
+                same = ([(c, b) for c, _, b in f["lets"]] == [(c, b) for c, _, b in t["lets"]]
+                        and all(al > 0.98 for _, al, _ in f["lets"]))
+                lets = t["lets"] if same else (
+                    [(c, al * (1 - fo), b) for c, al, b in f["lets"]] + [(c, fi, b) for c, _, b in t["lets"]])
+                out[code] = dict(x=_lerp(f["x"], t["x"], e), y=_lerp(f["y"], t["y"], e),
+                                 w=_lerp(f["w"], t["w"], e), h=_lerp(f["h"], t["h"], e),
+                                 a=_lerp(f["a"], 1.0, e), lets=lets)
+            else:
+                s = anc(code) if code else t
+                out[code] = dict(x=_lerp(s["x"], t["x"], e), y=_lerp(s["y"], t["y"], e),
+                                 w=_lerp(t["w"] * 0.3, t["w"], e), h=_lerp(t["h"] * 0.3, t["h"], e),
+                                 a=fa, lets=[(c, fi, b) for c, _, b in t["lets"]])
+        for code in sorted((c for c in F if c not in T), key=len):
+            f = F[code]
+            s = anc(code)
+            out[code] = dict(x=_lerp(f["x"], s["x"], e), y=_lerp(f["y"], s["y"], e),
+                             w=_lerp(f["w"], f["w"] * 0.3, e), h=_lerp(f["h"], f["h"] * 0.3, e),
+                             a=f["a"] * (1 - fa), lets=[(c, al * (1 - fo), b) for c, al, b in f["lets"]])
+        return out
+
     def paintEvent(self, ev):
         e = self.engine
         p = QPainter(self)
@@ -1290,51 +1405,51 @@ class TreeView(QWidget):
         p.drawText(QRectF(26, 14, 220, 26), AL_L, "MORSE")
         p.drawText(QRectF(self.width() - 246, 14, 220, 26), AL_R, "CODE")
 
-        x0, y0, pitch = self._grid()
-        pts = {code: QPointF(x0 + (c - self.minc + .5) * pitch, y0 + (rr - self.minr + .5) * pitch)
-               for code, (c, rr) in self.pos.items()}
+        scene, pitch, prog = self._scene()
+
+        def glow_of(code):
+            if code in self.pos:
+                return self.glow.get(code, 0.0)
+            return self._ghost.get(code, 0.0) * (1 - prog)      # уходящий узел — свечение затухает
 
         # рёбра
-        for code, pt in pts.items():
+        for code, n in scene.items():
             if not code:
                 continue
-            par = pts[code[:-1]]
-            t = min(1.0, self.glow.get(code, 0.0) * 1.5)
+            par = scene.get(code[:-1])
+            if par is None:
+                continue
+            a = min(n["a"], par["a"])
+            if a < 0.01:
+                continue
+            pa, pt = QPointF(par["x"], par["y"]), QPointF(n["x"], n["y"])
+            t = min(1.0, glow_of(code) * 1.5)
             if t > 0.04:
-                pen = QPen(col(ACC, int(95 * t)), 8)
+                pen = QPen(col(ACC, int(95 * t * a)), 8)
                 pen.setCapStyle(Qt.PenCapStyle.RoundCap)
                 p.setPen(pen)
-                p.drawLine(par, pt)
-            p.setPen(QPen(mix("#2D2650", ACC_L, t), 1.8 + t))
-            p.drawLine(par, pt)
+                p.drawLine(pa, pt)
+            p.setPen(QPen(with_alpha(mix("#2D2650", ACC_L, t), a), 1.8 + t))
+            p.drawLine(pa, pt)
 
         # узлы
-        L0, T0 = pitch * 0.90, pitch * 0.58
-        R0 = pitch * 0.36
         f_let = font(max(9, int(pitch * 0.34)), W_SEMI)
         err = max(0.0, 1.0 - (time.perf_counter() - e.err_t) / 0.45)
-        for code, pt in pts.items():
-            g = self.glow.get(code, 0.0)
+        show_let = self.letters_visible()
+        for code, n in scene.items():
+            a = n["a"]
+            if a < 0.01:
+                continue
+            pt = QPointF(n["x"], n["y"])
+            g = glow_of(code)
             hot = self.hot if code == e.flash_code else 0.0
-            sc = 1.0 if (not code or code in self.letters) else 0.6    # безымянные узлы цифрового дерева
-            L, T, R = L0 * sc, T0 * sc, R0 * sc
-            if not code:                                   # корень — антенна
-                rect = QRectF(pt.x() - R, pt.y() - R, 2 * R, 2 * R)
-                rad = R
-            elif code[-1] == ".":
-                rect = QRectF(pt.x() - R, pt.y() - R, 2 * R, 2 * R)
-                rad = R
-            else:
-                par = pts[code[:-1]]
-                if abs(par.x() - pt.x()) < 1:              # пришли по вертикали
-                    rect = QRectF(pt.x() - T / 2, pt.y() - L / 2, T, L)
-                else:
-                    rect = QRectF(pt.x() - L / 2, pt.y() - T / 2, L, T)
-                rad = T / 2
+            w, h = max(1.0, n["w"]), max(1.0, n["h"])
+            rect = QRectF(pt.x() - w / 2, pt.y() - h / 2, w, h)
+            rad = min(w, h) / 2
             if g > 0.02:
                 rg = QRadialGradient(pt, pitch * 1.0)
-                rg.setColorAt(0.0, col(ACC if not hot else "#E9D5FF", int(150 * min(1, g))))
-                rg.setColorAt(0.45, col(ACC, int(55 * min(1, g))))
+                rg.setColorAt(0.0, col(ACC if not hot else "#E9D5FF", int(150 * min(1, g) * a)))
+                rg.setColorAt(0.45, col(ACC, int(55 * min(1, g) * a)))
                 rg.setColorAt(1.0, col(ACC, 0))
                 p.setPen(NOPEN)
                 p.setBrush(rg)
@@ -1344,19 +1459,23 @@ class TreeView(QWidget):
             fill = mix(fill, "#E9D5FF", hot)
             if not code and err > 0:
                 fill = mix(fill, ERR, err * 0.8)
+            fill = with_alpha(fill, a)
+            top = fill.lighter(118)
+            top.setAlpha(fill.alpha())
             grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-            grad.setColorAt(0, fill.lighter(118))
+            grad.setColorAt(0, top)
             grad.setColorAt(1, fill)
             p.setBrush(grad)
-            p.setPen(QPen(mix("#3A3160", ACC_XL, gg), 1.4))
+            p.setPen(QPen(with_alpha(mix("#3A3160", ACC_XL, gg), a), 1.4))
             p.drawRoundedRect(rect, rad, rad)
-            if not code:
-                pass                     # корень — просто пустой круг
-            elif code in self.letters and self.letters_visible():
+            if code and show_let and n["lets"]:
                 p.setFont(f_let)
-                base = "#8FB4F5" if code in self.extra else MID      # цифры и символы — голубоватые
-                p.setPen(mix(base, "#FFFFFF", min(1.0, gg * 1.2)))
-                p.drawText(rect, AL_C, self.letters[code])
+                lrect = QRectF(pt.x() - 40, pt.y() - 40, 80, 80)
+                for ch, la, base in n["lets"]:
+                    if la * a < 0.01:
+                        continue
+                    p.setPen(with_alpha(mix(base, "#FFFFFF", min(1.0, gg * 1.2)), la * a))
+                    p.drawText(lrect, AL_C, ch)
 
 
 # ---------- большая клавиша ----------
