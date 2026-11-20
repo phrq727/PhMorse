@@ -138,13 +138,64 @@ try:
 except Exception:
     HAVE_SOUND = False
 
-# ---------- палитра ----------
-BG0, BG1 = "#0A0812", "#130E24"
-SURF, SURF2 = "#15112A", "#1C1636"
-BORDER, BORDER_HI = "#2B2447", "#6A52C4"
-TXT, MID, DIM = "#EDE9FE", "#BDB4E0", "#7C7499"
-ACC, ACC_D, ACC_L, ACC_XL = "#8B5CF6", "#6D28D9", "#A78BFA", "#C4B5FD"
-DASH, ERR = "#E879F9", "#FB7185"
+# ---------- палитра / темы ----------
+# Все цвета интерфейса живут здесь. apply_theme() кладёт выбранную палитру в глобальные
+# имена (BG0, TXT, ACC ...), поэтому смена темы действует на весь код сразу.
+THEMES = {
+    "dark": dict(
+        BG0="#0A0812", BG1="#130E24", WIN_TOP="#120D22",
+        SURF="#15112A", SURF2="#1C1636",
+        BORDER="#2B2447", BORDER_HI="#6A52C4",
+        TXT="#EDE9FE", MID="#BDB4E0", DIM="#7C7499",
+        ACC="#8B5CF6", ACC_D="#6D28D9", ACC_L="#A78BFA", ACC_XL="#C4B5FD",
+        DASH="#E879F9", ERR="#FB7185", GREEN="#86EFAC",
+        CARD_A="#1B1534", CARD_B="#130F26", LINE="#2A2347", HOLD="#5A5280",
+        TREE_A="#191232", TREE_B="#0E0A1D",
+        NODE="#1D1836", NODE_EDGE="#3A3160", EDGE="#2D2650", LET_EXTRA="#8FB4F5",
+        KEY_A="#1D1738", KEY_DOWN="#221A42", KEY_B="#140F28",
+        FAINT="#6B6390", HINT="#5F5886", BTN_ON="#FFFFFF", TOG_OFF="#2A2347",
+        TRACK="#231D3D", TRACK_OFF="#1A1630", FILL_OFF="#3A3358",
+        KNOB="#F5F3FF", KNOB_OFF="#5A5278", LBL_OFF="#4A4366",
+        SB="#2F2756", SB_HI="#4A3C85", GLOW1=70, GLOW2=42,
+    ),
+    "light": dict(
+        BG0="#EBE6F8", BG1="#F6F3FD", WIN_TOP="#F6F3FD",
+        SURF="#FFFFFF", SURF2="#F1ECFB",
+        BORDER="#D8CFF0", BORDER_HI="#8B6FE0",
+        TXT="#211A3D", MID="#4E4573", DIM="#8077A3",
+        ACC="#8B5CF6", ACC_D="#6D28D9", ACC_L="#7C4DEB", ACC_XL="#6D28D9",
+        DASH="#C026D3", ERR="#E11D48", GREEN="#16A34A",
+        CARD_A="#FFFFFF", CARD_B="#F7F3FF", LINE="#E3DCF5", HOLD="#A89FC8",
+        TREE_A="#FFFFFF", TREE_B="#EFEAFB",
+        NODE="#ECE6FA", NODE_EDGE="#BDB0E4", EDGE="#CDC3EC", LET_EXTRA="#3568D4",
+        KEY_A="#FFFFFF", KEY_DOWN="#F0E9FF", KEY_B="#F1ECFB",
+        FAINT="#A59CC4", HINT="#8A81AB", BTN_ON="#4C1D95", TOG_OFF="#D5CCEC",
+        TRACK="#DCD4F2", TRACK_OFF="#ECE8F7", FILL_OFF="#C9C0E4",
+        KNOB="#FFFFFF", KNOB_OFF="#B9B0D6", LBL_OFF="#B3AACF",
+        SB="#CFC6EA", SB_HI="#B4A7E0", GLOW1=38, GLOW2=24,
+    ),
+}
+THEME = {"name": "dark"}
+globals().update(THEMES["dark"])
+
+
+def tooltip_qss():
+    return (f"QToolTip {{ background: {CARD_A}; color: {TXT}; border: 1px solid {BORDER}; "
+            f"padding: 4px 8px; }}")
+
+
+def hint_qss():
+    return f"color:{HINT}; font-size:11px; background:transparent;"
+
+
+def apply_theme(name):
+    """Переключает палитру (dark / light) во всём приложении."""
+    name = name if name in THEMES else "dark"
+    THEME["name"] = name
+    globals().update(THEMES[name])
+    app = QApplication.instance()
+    if app is not None:
+        app.setStyleSheet(tooltip_qss())
 
 UI_FONTS = ["Segoe UI Variable Display", "Segoe UI", "Inter", "SF Pro Display", "Helvetica Neue", "Arial"]
 W_NORMAL, W_MED, W_SEMI = QFont.Weight.Normal, QFont.Weight.Medium, QFont.Weight.DemiBold
@@ -188,20 +239,23 @@ def fit_tail(text, fm, maxw):
     return "…" + text
 
 
-def dark_titlebar(widget):
-    """Тёмная шапка окна в Windows 10/11."""
+def style_titlebar(widget):
+    """Шапка окна в Windows 10/11 под текущую тему (тёмная / светлая)."""
     if sys.platform != "win32":
         return
     try:
         import ctypes
         hwnd = int(widget.winId())
         dwm = ctypes.windll.dwmapi
-        one = ctypes.c_int(1)
+        dark = ctypes.c_int(1 if THEME["name"] == "dark" else 0)
         for attr in (20, 19):
-            if dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(one), 4) == 0:
+            if dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(dark), 4) == 0:
                 break
-        cap = ctypes.c_int((0x22 << 16) | (0x0D << 8) | 0x12)   # цвет заголовка (Win11), BGR
+        c = QColor(WIN_TOP)
+        cap = ctypes.c_int((c.blue() << 16) | (c.green() << 8) | c.red())    # цвет заголовка (Win11), BGR
         dwm.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(cap), 4)
+        # NOMOVE | NOSIZE | NOZORDER | NOACTIVATE | FRAMECHANGED — чтобы рамка перерисовалась сразу
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0002 | 0x0001 | 0x0004 | 0x0010 | 0x0020)
     except Exception:
         pass
 
@@ -210,7 +264,7 @@ def dark_titlebar(widget):
 DEFAULTS = dict(
     lang="EN", dot_dash_ms=220, letter_gap_ms=800, auto_space=True, word_gap_ms=2000,
     sound=True, freq=700, volume=35, key="ctrl", dual_map="ctrl_dash", space_dbl_ms=350,
-    uppercase=True, show_letters=True, on_top=False, ui_lang="en", combo=False,
+    uppercase=True, show_letters=True, on_top=False, ui_lang="en", combo=False, theme="dark",
 )
 K_CTRL, K_ALT, K_SPACE = int(Qt.Key.Key_Control), int(Qt.Key.Key_Alt), int(Qt.Key.Key_Space)
 KEYS = {
@@ -239,6 +293,7 @@ I18N = {
         "brand_sub": "type text in Morse code",
         "tip_game": "Game", "tip_settings": "Settings",
         "tip_combo": "Letters + digits + symbols in one tree",
+        "tip_letters": "Letters on the tree",
         "tip_clear": "Clear all", "tip_copy_img": "Copy as image",
         "card_text": "TEXT", "card_morse": "MORSE",
         "ph_text": "Text will appear here…", "ph_morse": "•—•  code will appear here",
@@ -267,7 +322,7 @@ I18N = {
         "dual_sub": "Each key gives its own symbol; press length doesn't matter",
         "upper": "UPPERCASE letters", "upper_sub": "Off — type in lowercase",
         "sec_look": "APPEARANCE",
-        "show_letters": "Letters on the tree", "show_letters_sub": "Turn off to practice from memory",
+        "theme": "Theme", "theme_sub": "Applied immediately", "theme_dark": "Dark", "theme_light": "Light",
         "on_top": "Always on top", "on_top_sub": "Applied after closing settings",
         "btn_reset": "Defaults", "btn_done": "Done",
         "confirm_title": "Reset settings", "confirm_text": "Reset all settings to defaults?",
@@ -282,6 +337,7 @@ I18N = {
         "brand_sub": "ввод текста азбукой Морзе",
         "tip_game": "Игра", "tip_settings": "Настройки",
         "tip_combo": "Буквы + цифры + символы в одном дереве",
+        "tip_letters": "Буквы на дереве",
         "tip_clear": "Очистить всё", "tip_copy_img": "Копировать как картинку",
         "card_text": "ТЕКСТ", "card_morse": "МОРЗЕ",
         "ph_text": "Текст появится здесь…", "ph_morse": "•—•  код появится здесь",
@@ -310,7 +366,7 @@ I18N = {
         "dual_sub": "Каждая клавиша даёт свой символ, длительность не важна",
         "upper": "ЗАГЛАВНЫЕ буквы", "upper_sub": "Выкл — вводить строчными",
         "sec_look": "ВНЕШНИЙ ВИД",
-        "show_letters": "Буквы на дереве", "show_letters_sub": "Выключи, чтобы тренироваться по памяти",
+        "theme": "Тема", "theme_sub": "Применяется сразу", "theme_dark": "Тёмная", "theme_light": "Светлая",
         "on_top": "Поверх всех окон", "on_top_sub": "Применится после закрытия настроек",
         "btn_reset": "По умолчанию", "btn_done": "Готово",
         "confirm_title": "Сброс настроек", "confirm_text": "Сбросить все настройки по умолчанию?",
@@ -361,6 +417,8 @@ class Settings:
                 self.d["ui_lang"] = "en"
             if self.d["dual_map"] not in ("ctrl_dash", "alt_dash"):
                 self.d["dual_map"] = "ctrl_dash"
+            if self.d["theme"] not in THEMES:
+                self.d["theme"] = "dark"
         except Exception:
             pass
 
@@ -737,13 +795,37 @@ def icon_combo(p, r, color):
     p.drawRoundedRect(QRectF(r.right() - 7.5, cy - 2.2, 8.5, 4.4), 2.2, 2.2)
 
 
+def icon_eye(p, r, color, slash=False):
+    """Глаз: буквы на дереве видны. С чертой — скрыты."""
+    pen = QPen(color, 1.7)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(NOBRUSH)
+    cx, cy = r.center().x(), r.center().y()
+    path = QPainterPath(QPointF(r.left() + 0.5, cy))
+    path.quadTo(QPointF(cx, cy - 10.5), QPointF(r.right() - 0.5, cy))
+    path.quadTo(QPointF(cx, cy + 10.5), QPointF(r.left() + 0.5, cy))
+    p.drawPath(path)
+    p.setPen(NOPEN)
+    p.setBrush(color)
+    p.drawEllipse(QPointF(cx, cy), 2.6, 2.6)
+    if slash:
+        p.setPen(pen)
+        p.drawLine(QPointF(r.left() + 3.5, r.bottom() - 2.5), QPointF(r.right() - 3.5, r.top() + 2.5))
+
+
+def icon_eye_off(p, r, color):
+    icon_eye(p, r, color, slash=True)
+
+
 class FlatButton(QWidget):
     clicked = Signal()
 
-    def __init__(self, text="", icon=None, primary=False, px=12, size=38, parent=None):
+    def __init__(self, text="", icon=None, primary=False, px=12, size=38, parent=None, width=None):
         super().__init__(parent)
         self.text, self.icon, self.primary, self.px = text, icon, primary, px
-        self.size_, self.active = size, False
+        self.size_, self.bw, self.active = size, width, False
         self._hover = self._down = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -756,7 +838,7 @@ class FlatButton(QWidget):
 
     def _fit(self):
         if not self.text:
-            self.setFixedSize(self.size_, self.size_)
+            self.setFixedSize(self.bw or self.size_, self.size_)      # bw — ширина, если кнопка не квадратная
             return
         fm = QFontMetricsF(font(self.px, W_SEMI))
         w = fm.horizontalAdvance(self.text) + 32
@@ -802,7 +884,7 @@ class FlatButton(QWidget):
                 t = max(t, 0.38)
             p.setBrush(mix(SURF, ACC, t))
             p.setPen(QPen(col(ACC_L if self.active else (BORDER_HI if self._hover else BORDER)), 1))
-            fg = col("#FFFFFF" if self.active else (TXT if self._hover else MID))
+            fg = col(BTN_ON if self.active else (TXT if self._hover else MID))
         p.drawRoundedRect(r, rad, rad)
         if self.icon:
             self.icon(p, QRectF(r.center().x() - 9, r.center().y() - 9, 18, 18), fg)
@@ -815,11 +897,17 @@ class FlatButton(QWidget):
 class Segmented(QWidget):
     changed = Signal(str)
 
-    def __init__(self, items, value, h=38, pad=30, parent=None):
+    def __init__(self, items, value, h=38, pad=30, parent=None, drag=False):
         super().__init__(parent)
         self.items, self.value, self.pad, self.h_ = items, value, pad, h
+        self.drag = drag                    # можно ли «хватать» и таскать ползунок как на телефоне
         self._measure()
         self._pos = float(self._idx())
+        self._dragging = False
+        self._dtarget, self._grab, self._v, self._grow = self._pos, 0.0, 0.0, 0.0
+        self._spring = QTimer(self)         # пружинка ползунка
+        self._spring.setInterval(16)
+        self._spring.timeout.connect(self._spring_tick)
         self.anim = QVariantAnimation(self)
         self.anim.setDuration(220)
         self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -867,6 +955,8 @@ class Segmented(QWidget):
 
     def set_value(self, v, animate=True):
         self.value = v
+        self._spring.stop()
+        self._dragging, self._v, self._grow = False, 0.0, 0.0
         if animate:
             self.anim.stop()
             self.anim.setStartValue(self._pos)
@@ -876,7 +966,54 @@ class Segmented(QWidget):
             self._pos = float(self._idx())
             self.update()
 
+    # --- перетаскивание ---
+    def _enabled_idx(self):
+        return [i for i, (k, _) in enumerate(self.items) if k not in self.disabled]
+
+    def _raw(self, e):
+        return (e.position().x() - 4) / self.seg - 0.5          # центр ползунка под курсором
+
+    def _drag_to(self, raw):
+        en = self._enabled_idx()
+        if not en:
+            return
+        self._dtarget = max(float(en[0]), min(float(en[-1]), raw))
+        near = min(en, key=lambda i: abs(i - self._dtarget))     # ближайший доступный пункт
+        key = self.items[near][0]
+        if key != self.value:                                    # переключаем «на лету», не отпуская
+            self.value = key
+            self.changed.emit(key)
+
+    def _spring_tick(self):
+        d = self._dtarget - self._pos
+        self._v = (self._v + d * 0.22) * 0.62                    # лёгкая пружина с небольшим «перелётом»
+        self._pos += self._v
+        n = len(self.items) - 1
+        self._pos = max(-0.15, min(n + 0.15, self._pos))
+        self._grow += ((1.0 if self._dragging else 0.0) - self._grow) * 0.3
+        if (not self._dragging and abs(d) < 0.002 and abs(self._v) < 0.002
+                and self._grow < 0.01):
+            self._pos, self._v, self._grow = self._dtarget, 0.0, 0.0
+            self._spring.stop()
+        self.update()
+
     def mousePressEvent(self, e):
+        if self.drag:
+            if e.button() != Qt.MouseButton.LeftButton or not self._enabled_idx():
+                return
+            raw = self._raw(e)
+            i = max(0, min(len(self.items) - 1, int((e.position().x() - 4) // self.seg)))
+            if self.items[i][0] in self.disabled:
+                return
+            self.anim.stop()
+            # если схватили сам ползунок — не даём ему «прыгнуть» под курсор
+            self._grab = (self._pos - raw) if abs(self._pos - raw) < 0.5 else 0.0
+            self._dragging = True
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self._drag_to(raw + self._grab)
+            if not self._spring.isActive():
+                self._spring.start()
+            return
         i = int((e.position().x() - 4) // self.seg)
         i = max(0, min(len(self.items) - 1, i))
         key = self.items[i][0]
@@ -885,6 +1022,18 @@ class Segmented(QWidget):
         if key != self.value:
             self.set_value(key)
             self.changed.emit(key)
+
+    def mouseMoveEvent(self, e):
+        if self.drag and self._dragging:
+            self._drag_to(self._raw(e) + self._grab)
+
+    def mouseReleaseEvent(self, e):
+        if self.drag and self._dragging:
+            self._dragging = False
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._dtarget = float(self._idx())                  # отпустили — прилипаем к ближайшему пункту
+            if not self._spring.isActive():
+                self._spring.start()
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -897,6 +1046,8 @@ class Segmented(QWidget):
         p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
         kh = self.height() - 8
         k = QRectF(4 + self._pos * self.seg, 4, self.seg, kh)
+        gw = 2.5 * self._grow + min(0.22, abs(self._v) * 0.5) * self.seg * 0.5    # «схвачен» + растяжение при движении
+        k.adjust(-gw, 0, gw, 0)
         g = QLinearGradient(k.topLeft(), k.bottomRight())
         g.setColorAt(0, col(ACC_L))
         g.setColorAt(1, col(ACC_D))
@@ -950,7 +1101,7 @@ class Toggle(QWidget):
         if not self.isEnabled():
             p.setOpacity(0.35)
         r = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
-        p.setBrush(mix("#2A2347", ACC, self._pos))
+        p.setBrush(mix(TOG_OFF, ACC, self._pos))
         p.setPen(QPen(mix(BORDER, ACC_L, self._pos), 1))
         p.drawRoundedRect(r, 13, 13)
         p.setPen(NOPEN)
@@ -959,9 +1110,24 @@ class Toggle(QWidget):
 
 
 class Brand(QWidget):
+    egg = Signal()                                  # пасхалка: 5 нажатий на значок
+    ICON = QRectF(0, 3, 34, 34)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(200, 40)
+        self.setFixedSize(190, 40)
+        self._n, self._t = 0, 0.0                   # курсор и подсказок намеренно нет — значок выглядит обычной картинкой
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and self.ICON.contains(e.position()):
+            now = time.perf_counter()
+            self._n = self._n + 1 if now - self._t < 2.0 else 1       # серия: не дольше 2 с между нажатиями
+            self._t = now
+            if self._n >= 5:
+                self._n = 0
+                self.egg.emit()
+        else:
+            e.ignore()
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -977,7 +1143,7 @@ class Brand(QWidget):
         p.drawRoundedRect(QRectF(16, 17, 12, 6), 3, 3)
         p.setFont(font(18, W_SEMI))
         p.setPen(col(TXT))
-        p.drawText(QRectF(46, 1, 150, 22), AL_L, "PhMorse v1.0.2")
+        p.drawText(QRectF(46, 1, 150, 22), AL_L, "PhMorse v1.0.3")
         p.setFont(font(11, W_NORMAL))
         p.setPen(col(DIM))
         p.drawText(QRectF(46, 22, 150, 16), AL_L, tr("brand_sub"))
@@ -1115,8 +1281,8 @@ class OutputCard(QWidget):
         D, W, GAP, LET, WORD = self.D, self.W, self.GAP, self.LET, self.WORD
         r = QRectF(.5, .5, w - 1, h - 1)
         g = QLinearGradient(r.topLeft(), r.bottomLeft())
-        g.setColorAt(0, col("#1B1534"))
-        g.setColorAt(1, col("#130F26"))
+        g.setColorAt(0, col(CARD_A))
+        g.setColorAt(1, col(CARD_B))
         p.setBrush(g)
         p.setPen(QPen(col(BORDER), 1))
         p.drawRoundedRect(r, 22, 22)
@@ -1132,7 +1298,7 @@ class OutputCard(QWidget):
         p.setPen(col(DIM))
         p.drawText(QPointF(lx, 30), tr("card_text"))
         p.drawText(QPointF(lx, 110), tr("card_morse"))
-        p.setPen(QPen(col("#2A2347"), 1))
+        p.setPen(QPen(col(LINE), 1))
         p.drawLine(QPointF(pad, 88), QPointF(w - pad, 88))
 
         # --- строка 1: буквы ---
@@ -1146,7 +1312,7 @@ class OutputCard(QWidget):
         if not committed and not shown:
             if not shot:
                 p.setFont(font(17, W_NORMAL))
-                p.setPen(col("#5A5280"))
+                p.setPen(col(HOLD))
                 p.drawText(QPointF(pad, y - 4), tr("ph_text"))
         else:
             tail = committed if shot else fit_tail(committed, fm, w - 2 * pad - prev_w - 10)
@@ -1171,7 +1337,7 @@ class OutputCard(QWidget):
         if not entries:
             if not shot:
                 p.setFont(font(15, W_NORMAL))
-                p.setPen(col("#5A5280"))
+                p.setPen(col(HOLD))
                 p.drawText(QPointF(pad, cy + 5), tr("ph_morse"))
         else:
             widths = [WORD if k == "w" else sym_width(c, D, W, GAP) for k, c, _ in entries]
@@ -1336,7 +1502,7 @@ class TreeView(QWidget):
                 w, h = (T, L) if abs(par.x() - pt.x()) < 1 else (L, T)     # пришли по вертикали / по горизонтали
             lets = []
             if code and code in self.letters:
-                lets = [(self.letters[code], 1.0, "#8FB4F5" if code in self.extra else MID)]
+                lets = [(self.letters[code], 1.0, LET_EXTRA if code in self.extra else MID)]
             out[code] = dict(x=pt.x(), y=pt.y(), w=w, h=h, a=1.0, lets=lets)
         return out, pitch
 
@@ -1394,8 +1560,8 @@ class TreeView(QWidget):
         p.setRenderHint(AA)
         r = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
         bg = QLinearGradient(r.topLeft(), r.bottomLeft())
-        bg.setColorAt(0, col("#191232"))
-        bg.setColorAt(1, col("#0E0A1D"))
+        bg.setColorAt(0, col(TREE_A))
+        bg.setColorAt(1, col(TREE_B))
         p.setBrush(bg)
         p.setPen(QPen(col(BORDER), 1))
         p.drawRoundedRect(r, 24, 24)
@@ -1429,7 +1595,7 @@ class TreeView(QWidget):
                 pen.setCapStyle(Qt.PenCapStyle.RoundCap)
                 p.setPen(pen)
                 p.drawLine(pa, pt)
-            p.setPen(QPen(with_alpha(mix("#2D2650", ACC_L, t), a), 1.8 + t))
+            p.setPen(QPen(with_alpha(mix(EDGE, ACC_L, t), a), 1.8 + t))
             p.drawLine(pa, pt)
 
         # узлы
@@ -1455,7 +1621,7 @@ class TreeView(QWidget):
                 p.setBrush(rg)
                 p.drawEllipse(pt, pitch * 1.0, pitch * 1.0)
             gg = min(1.0, g)
-            fill = mix("#1D1836", "#7C3AED", gg)
+            fill = mix(NODE, "#7C3AED", gg)
             fill = mix(fill, "#E9D5FF", hot)
             if not code and err > 0:
                 fill = mix(fill, ERR, err * 0.8)
@@ -1466,7 +1632,7 @@ class TreeView(QWidget):
             grad.setColorAt(0, top)
             grad.setColorAt(1, fill)
             p.setBrush(grad)
-            p.setPen(QPen(with_alpha(mix("#3A3160", ACC_XL, gg), a), 1.4))
+            p.setPen(QPen(with_alpha(mix(NODE_EDGE, ACC_XL, gg), a), 1.4))
             p.drawRoundedRect(rect, rad, rad)
             if code and show_let and n["lets"]:
                 p.setFont(f_let)
@@ -1518,8 +1684,8 @@ class KeyPad(QWidget):
         path = QPainterPath()
         path.addRoundedRect(r, 26, 26)
         g = QLinearGradient(r.topLeft(), r.bottomLeft())
-        g.setColorAt(0, col("#221A42" if down else "#1D1738"))
-        g.setColorAt(1, col("#140F28"))
+        g.setColorAt(0, col(KEY_DOWN if down else KEY_A))
+        g.setColorAt(1, col(KEY_B))
         p.fillPath(path, QBrush(g))
         if down:
             p.save()
@@ -1567,7 +1733,8 @@ class KeyPad(QWidget):
 
 
 # ---------- окно настроек ----------
-DIALOG_QSS = f"""
+def dialog_qss():
+    return f"""
 QDialog {{ background: {BG1}; }}
 QScrollArea {{ background: transparent; border: none; }}
 QWidget#body {{ background: transparent; }}
@@ -1575,17 +1742,17 @@ QLabel {{ color: {TXT}; font-size: 13px; background: transparent; }}
 QLabel#section {{ color: {ACC_L}; font-size: 11px; font-weight: 600; padding-top: 16px; padding-bottom: 2px; }}
 QLabel#sub {{ color: {DIM}; font-size: 11px; }}
 QLabel#val {{ color: {ACC_XL}; font-size: 12px; font-weight: 600; }}
-QSlider::groove:horizontal {{ height: 6px; background: #231D3D; border-radius: 3px; }}
+QSlider::groove:horizontal {{ height: 6px; background: {TRACK}; border-radius: 3px; }}
 QSlider::sub-page:horizontal {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {ACC_D}, stop:1 {ACC_L}); border-radius: 3px; }}
-QSlider::handle:horizontal {{ background: #F5F3FF; border: 3px solid {ACC}; width: 12px; height: 12px; margin: -6px 0; border-radius: 9px; }}
+QSlider::handle:horizontal {{ background: {KNOB}; border: 3px solid {ACC}; width: 12px; height: 12px; margin: -6px 0; border-radius: 9px; }}
 QSlider::handle:horizontal:hover {{ border-color: {ACC_XL}; }}
-QLabel:disabled, QLabel#sub:disabled, QLabel#val:disabled {{ color: #4A4366; }}
-QSlider::groove:horizontal:disabled {{ background: #1A1630; }}
-QSlider::sub-page:horizontal:disabled {{ background: #3A3358; }}
-QSlider::handle:horizontal:disabled {{ background: #5A5278; border-color: #3A3358; }}
+QLabel:disabled, QLabel#sub:disabled, QLabel#val:disabled {{ color: {LBL_OFF}; }}
+QSlider::groove:horizontal:disabled {{ background: {TRACK_OFF}; }}
+QSlider::sub-page:horizontal:disabled {{ background: {FILL_OFF}; }}
+QSlider::handle:horizontal:disabled {{ background: {KNOB_OFF}; border-color: {FILL_OFF}; }}
 QScrollBar:vertical {{ background: transparent; width: 9px; margin: 4px 2px; }}
-QScrollBar::handle:vertical {{ background: #2F2756; border-radius: 3px; min-height: 30px; }}
-QScrollBar::handle:vertical:hover {{ background: #4A3C85; }}
+QScrollBar::handle:vertical {{ background: {SB}; border-radius: 3px; min-height: 30px; }}
+QScrollBar::handle:vertical:hover {{ background: {SB_HI}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 """
@@ -1602,7 +1769,7 @@ class ConfirmDialog(QDialog):
     def __init__(self, title, text, sub, yes, no, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.setStyleSheet(DIALOG_QSS)
+        self.setStyleSheet(dialog_qss())
         self.setModal(True)
         self.setFixedWidth(420)
         lay = QVBoxLayout(self)
@@ -1630,7 +1797,7 @@ class ConfirmDialog(QDialog):
         lay.addLayout(row)
 
     def showEvent(self, e):
-        dark_titlebar(self)
+        style_titlebar(self)
         super().showEvent(e)
 
 
@@ -1640,7 +1807,8 @@ class SettingsDialog(QDialog):
         self.st, self.tone, self.on_change = st, tone, on_change
         self.setups, self.rows = [], {}
         self.page = self.scroll = None
-        self.setStyleSheet(DIALOG_QSS)
+        self._theme = st["theme"]
+        self.setStyleSheet(dialog_qss())
         self.resize(530, 780)
         self.root = QVBoxLayout(self)
         self.root.setContentsMargins(0, 0, 0, 0)
@@ -1700,7 +1868,8 @@ class SettingsDialog(QDialog):
         self.toggle(tr("upper"), "uppercase", tr("upper_sub"))
 
         self.section(tr("sec_look"))
-        self.toggle(tr("show_letters"), "show_letters", tr("show_letters_sub"))
+        self.segmented(tr("theme"), "theme", [("dark", tr("theme_dark")), ("light", tr("theme_light"))],
+                       tr("theme_sub"))
         self.toggle(tr("on_top"), "on_top", tr("on_top_sub"))
         self.vl.addStretch(1)
 
@@ -1738,7 +1907,7 @@ class SettingsDialog(QDialog):
         box.addWidget(sg, 0, Qt.AlignmentFlag.AlignLeft)
 
     def showEvent(self, e):
-        dark_titlebar(self)
+        style_titlebar(self)
         super().showEvent(e)
 
     # --- строительные блоки ---
@@ -1784,7 +1953,17 @@ class SettingsDialog(QDialog):
     def changed(self):
         self.st.save()
         self.refresh_enabled()
-        self.on_change(False)
+        self.on_change(False)                           # главное окно само применит тему
+        if self.st["theme"] != self._theme:
+            self._theme = self.st["theme"]
+            self.retheme()
+
+    def retheme(self):
+        """Тема сменилась: перекрашиваем это окно, не перестраивая его (анимации переключателя не рвутся)."""
+        self.setStyleSheet(dialog_qss())
+        style_titlebar(self)
+        for w in self.findChildren(QWidget):
+            w.update()
 
     def slider(self, title, key, lo, hi, step, unit, sub=""):
         val = QLabel()
@@ -1877,7 +2056,6 @@ GAME_POOLS[("ALL_RU", 0)] = GAME_POOLS[("RU", 0)] + [
 GAME_POOLS[("ALL_RU", 1)] = GAME_POOLS[("RU", 1)] + [
     "ЗВОНИ 112", "КОМНАТА 101", "ПРИВЕТ, МИР!", "КАК ДЕЛА?", "ЧТО? ГДЕ? КОГДА?", "2+2=4", "ДОМ 12/3",
     "В 8:30 У ВОКЗАЛА", "ДА, ЭТО Я!"]
-GREEN = "#86EFAC"
 
 
 class GameBar(QWidget):
@@ -2005,8 +2183,8 @@ class GameBar(QWidget):
         ok, bad = now < self.ok_until, now < self.bad_until
         r = QRectF(.5, .5, w - 1, h - 1)
         g = QLinearGradient(r.topLeft(), r.bottomLeft())
-        g.setColorAt(0, col("#1D1738"))
-        g.setColorAt(1, col("#140F28"))
+        g.setColorAt(0, col(KEY_A))
+        g.setColorAt(1, col(KEY_B))
         p.setBrush(g)
         p.setPen(QPen(col(GREEN if ok else (ERR if bad else BORDER_HI), 255 if (ok or bad) else 150), 1.4))
         p.drawRoundedRect(r, 22, 22)
@@ -2034,7 +2212,7 @@ class GameBar(QWidget):
             elif i == n:
                 c = col(MID)
             else:
-                c = col("#6B6390")
+                c = col(FAINT)
             p.setPen(c)
             p.drawText(QPointF(x, y), ch)
             if i == n and not self.busy:
@@ -2044,17 +2222,95 @@ class GameBar(QWidget):
             x += adv
 
 
+# ---------- пасхалка ----------
+class EggTyper(QObject):
+    """Сама «выстукивает» 727 так же, как это делали бы руками: нажимает и отпускает клавишу ввода
+    (звук, подсветка, дерево — всё как при обычном вводе). Темп задаёт порог «точка / тире»:
+    точка = 1/3 порога, тире = порог (с запасом), пауза между знаками = точка."""
+    CODES = ("--...", "..---", "--...")             # 7 2 7
+    OWNER = "egg"
+
+    def __init__(self, engine, st):
+        super().__init__()
+        self.engine, self.st = engine, st
+        self.steps, self.running, self._fn = [], False, None
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.timer.timeout.connect(self._fire)
+
+    def _build(self):
+        """Список шагов [(пауза_перед_мс, действие)]."""
+        st, e = self.st, self.engine
+        thr = int(st["dot_dash_ms"])
+        u = max(50, thr // 3)                       # «единица» времени = длина точки
+        dual = st["key"] == "ctrlalt"
+        # паузы подрезаем, чтобы авто-конец буквы и авто-пробел не сработали раньше нас
+        lg = int(st["letter_gap_ms"])
+        to_commit = min(3 * u, max(80, lg - 60))
+        after = 3 * u
+        if st["auto_space"]:
+            after = min(after, max(80, max(150, int(st["word_gap_ms"]) - lg) - 60))
+        steps, wait = [], 300                       # короткая пауза перед первым нажатием
+        for code in self.CODES:
+            for sym in code:
+                if dual:                            # Ctrl + Alt: длину звука задаёт сам движок
+                    steps.append((wait, lambda s=sym: e.tap(s)))
+                    wait = (thr if sym == "-" else u) + u
+                else:                               # одна клавиша: держим столько, сколько нужно для точки / тире
+                    steps.append((wait, lambda: e.press(owner=self.OWNER)))
+                    steps.append((int(thr * 1.2) if sym == "-" else u, lambda: e.release(owner=self.OWNER)))
+                    wait = u
+            steps.append((wait - u + to_commit, self._commit))
+            wait = after
+        return steps
+
+    def _commit(self):
+        if self.engine.seq:
+            self.engine.space_press()               # как нажатие Пробела: буква применяется
+
+    def start(self):
+        if self.running:
+            return
+        self.steps, self.running = self._build(), True
+        self._schedule()
+
+    def _schedule(self):
+        if not self.steps:
+            self.running = False
+            return
+        delay, self._fn = self.steps.pop(0)
+        self.timer.start(delay)
+
+    def _fire(self):
+        fn, self._fn = self._fn, None
+        if fn:
+            fn()
+        self._schedule()
+
+    def cancel(self):
+        if not self.running:
+            return
+        self.timer.stop()
+        self.steps, self.running, self._fn = [], False, None
+        self.engine.abort()
+
+
 # ---------- главное окно ----------
 class MainWindow(QWidget):
     GAME_EXTRA = 138
+    BTN_W, BTN_GAP = 32, 3                          # кнопки справа от переключателя деревьев
 
     def __init__(self):
         super().__init__()
         self.st = Settings()
         set_ui_lang(self.st["ui_lang"])
         self._ui = self.st["ui_lang"]
+        apply_theme(self.st["theme"])
+        self._theme = self.st["theme"]
         self.tone = Tone()
         self.engine = Engine(self.st, self.tone)
+        self.egg = EggTyper(self.engine, self.st)
         self.setWindowTitle("PhMorse")
         self._letters = self.st["lang"] if self.st["lang"] in ("EN", "RU") else "EN"
         self.min_h = 730
@@ -2068,25 +2324,30 @@ class MainWindow(QWidget):
         root.setContentsMargins(24, 20, 24, 16)
         root.setSpacing(14)
         head = QHBoxLayout()
+        head.setSpacing(0)                          # расстояния между кнопками задаём вручную
         self.brand = Brand()
         head.addWidget(self.brand, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addStretch(1)
         self.lang = Segmented([("EN", "ENG"), ("RU", "RUS"), ("NUM", "123"), ("SYM", "!@#")],
-                              self.st["lang"], pad=18)
+                              self.st["lang"], pad=18, drag=True)
         head.addWidget(self.lang, 0, Qt.AlignmentFlag.AlignVCenter)
         self.lang.set_disabled(("NUM", "SYM") if self.st["combo"] else ())
         self.lang._fade_step(1.0)
         head.addSpacing(8)
-        self.btn_combo = FlatButton(icon=icon_combo)
+        self.btn_combo = FlatButton(icon=icon_combo, width=self.BTN_W)
         self.btn_combo.setToolTip(tr("tip_combo"))
         self.btn_combo.active = bool(self.st["combo"])
         head.addWidget(self.btn_combo, 0, Qt.AlignmentFlag.AlignVCenter)
-        head.addSpacing(4)
-        self.btn_game = FlatButton(icon=icon_gamepad)
+        head.addSpacing(self.BTN_GAP)
+        self.btn_letters = FlatButton(icon=icon_eye, width=self.BTN_W)
+        self.btn_letters.setToolTip(tr("tip_letters"))
+        head.addWidget(self.btn_letters, 0, Qt.AlignmentFlag.AlignVCenter)
+        head.addSpacing(self.BTN_GAP)
+        self.btn_game = FlatButton(icon=icon_gamepad, width=self.BTN_W)
         self.btn_game.setToolTip(tr("tip_game"))
         head.addWidget(self.btn_game, 0, Qt.AlignmentFlag.AlignVCenter)
-        head.addSpacing(4)
-        self.gear = FlatButton(icon=icon_sliders)
+        head.addSpacing(self.BTN_GAP)
+        self.gear = FlatButton(icon=icon_sliders, width=self.BTN_W)
         self.gear.setToolTip(tr("tip_settings"))
         head.addWidget(self.gear, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(head)
@@ -2102,15 +2363,17 @@ class MainWindow(QWidget):
         self.hint = QLabel()
         self.hint.setAlignment(AL_C)
         self.hint.setWordWrap(True)
-        self.hint.setStyleSheet("color:#5F5886; font-size:11px; background:transparent;")
+        self.hint.setStyleSheet(hint_qss())
         root.addWidget(self.hint)
 
         self.lang.changed.connect(self.set_lang)
         self.gear.clicked.connect(self.open_settings)
         self.btn_game.clicked.connect(self.toggle_game)
         self.btn_combo.clicked.connect(self.toggle_combo)
+        self.btn_letters.clicked.connect(self.toggle_letters)
+        self.brand.egg.connect(self._egg)
         self.game.exit_requested.connect(self.toggle_game)
-        self.pad.pressed.connect(self.engine.press)
+        self.pad.pressed.connect(self._pad_press)
         self.pad.released.connect(self.engine.release)
         self.engine.changed.connect(self._refresh)
 
@@ -2134,9 +2397,43 @@ class MainWindow(QWidget):
         if self.game.active:
             self.game.tick()
 
+    def _pad_press(self):
+        if not self.egg.running:                    # пока пасхалка «печатает», ввод мышью не мешает
+            self.engine.press()
+
+    def _egg(self):
+        if self.game.active or self.egg.running:
+            return
+        self.engine.abort()
+        self.engine.cancel()                        # недонабранную букву сбрасываем, готовый текст остаётся
+        self.egg.start()
+        self.setFocus()
+
+    def retheme(self):
+        """Тема сменилась: перекрашиваем главное окно."""
+        self.hint.setStyleSheet(hint_qss())
+        style_titlebar(self)
+        self.update()
+        for w in self.findChildren(QWidget):
+            w.update()
+
+    def _sync_letters(self):
+        on = bool(self.st["show_letters"])
+        self.btn_letters.active = on
+        self.btn_letters.icon = icon_eye if on else icon_eye_off
+        self.btn_letters.update()
+        self.tree.update()
+
+    def toggle_letters(self):
+        self.st["show_letters"] = not self.st["show_letters"]
+        self.st.save()
+        self._sync_letters()
+        self.setFocus()
+
     def retranslate(self):
         self.btn_game.setToolTip(tr("tip_game"))
         self.btn_combo.setToolTip(tr("tip_combo"))
+        self.btn_letters.setToolTip(tr("tip_letters"))
         self.gear.setToolTip(tr("tip_settings"))
         self.card.retranslate()
         self.game.retranslate()
@@ -2150,6 +2447,7 @@ class MainWindow(QWidget):
         self._apply_tree()
 
     def _apply_tree(self):
+        self.egg.cancel()
         key = eff_lang(self.st)
         self.engine.set_lang(key)
         self.tree.set_lang(key)
@@ -2171,10 +2469,12 @@ class MainWindow(QWidget):
         self._apply_tree()
 
     def toggle_game(self):
+        self.egg.cancel()
         self.engine.abort()
         if self.game.active:
             self.game.stop()
             self.btn_game.active = False
+            self.btn_letters.setEnabled(True)
             self.setMinimumHeight(self.min_h)
             if self._grew:
                 self.resize(self.width(), self.height() - self._grew)
@@ -2188,11 +2488,16 @@ class MainWindow(QWidget):
                 self.resize(self.width(), self.height() + self._grew)
             self.game.start()
             self.btn_game.active = True
+            self.btn_letters.setEnabled(False)      # в игре буквами управляет её кнопка подсказок
         self.btn_game.update()
         self.setFocus()
 
     def apply_settings(self, with_flags):
         st = self.st
+        if st["theme"] != self._theme:
+            self._theme = st["theme"]
+            apply_theme(self._theme)
+            self.retheme()
         set_ui_lang(st["ui_lang"])
         if st["ui_lang"] != self._ui:
             self._ui = st["ui_lang"]
@@ -2206,9 +2511,11 @@ class MainWindow(QWidget):
             if bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) != want:
                 self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, want)
                 self.show()
+        self._sync_letters()
         self._refresh()
 
     def open_settings(self):
+        self.egg.cancel()
         self.engine.abort()
         dlg = SettingsDialog(self.st, self.tone, self.apply_settings, self)
         dlg.exec()
@@ -2225,7 +2532,7 @@ class MainWindow(QWidget):
             fg = self.frameGeometry()
             fg.moveCenter(scr.availableGeometry().center())
             self.move(fg.topLeft())
-            dark_titlebar(self)
+            style_titlebar(self)
         super().showEvent(e)
         self.setFocus()
 
@@ -2234,10 +2541,10 @@ class MainWindow(QWidget):
         p.setRenderHint(AA)
         w, h = self.width(), self.height()
         g = QLinearGradient(0, 0, 0, h)
-        g.setColorAt(0, col("#120D22"))
+        g.setColorAt(0, col(WIN_TOP))
         g.setColorAt(1, col(BG0))
         p.fillRect(self.rect(), QBrush(g))
-        for cx, cy, rad, a in ((w * 0.88, -30, 460, 70), (w * 0.05, h * 1.02, 420, 42)):
+        for cx, cy, rad, a in ((w * 0.88, -30, 460, GLOW1), (w * 0.05, h * 1.02, 420, GLOW2)):
             rg = QRadialGradient(QPointF(cx, cy), rad)
             rg.setColorAt(0, col(ACC, a))
             rg.setColorAt(1, col(ACC, 0))
@@ -2248,6 +2555,11 @@ class MainWindow(QWidget):
             return
         k, st = int(e.key()), self.st
         mode = st["key"]
+        if self.egg.running:                        # пасхалка печатает: ввод блокируем, Esc — прервать
+            if k == int(Qt.Key.Key_Escape):
+                self.egg.cancel()
+            e.accept()
+            return
         if mode == "ctrlalt" and k in (K_CTRL, K_ALT):
             dash_key = K_CTRL if st["dual_map"] == "ctrl_dash" else K_ALT
             self.engine.tap("-" if k == dash_key else ".")
@@ -2268,6 +2580,9 @@ class MainWindow(QWidget):
         if e.isAutoRepeat():
             return
         k, mode = int(e.key()), self.st["key"]
+        if self.egg.running:
+            e.accept()
+            return
         if mode == "ctrlalt" and k in (K_CTRL, K_ALT):
             e.accept()                      # длительность нажатия в этом режиме не важна
         elif mode != "ctrlalt" and k in KEYS[mode][1]:
@@ -2278,10 +2593,12 @@ class MainWindow(QWidget):
 
     def changeEvent(self, e):
         if e.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
+            self.egg.cancel()
             self.engine.abort()
         super().changeEvent(e)
 
     def closeEvent(self, e):
+        self.egg.cancel()
         self.tone.stop()
         self.st.save()
         super().closeEvent(e)
@@ -2302,7 +2619,6 @@ def main():
     ic = app_icon()
     if not ic.isNull():
         app.setWindowIcon(ic)
-    app.setStyleSheet("QToolTip { background: #1B1534; color: #EDE9FE; border: 1px solid #2B2447; padding: 4px 8px; }")
     app.setFont(font(13))
     win = MainWindow()
     win.show()
