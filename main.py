@@ -273,6 +273,9 @@ KEYS = {
     "alt": ("Alt", {K_ALT}),
     "ctrlalt": ("Ctrl + Alt", {K_CTRL, K_ALT}),
 }
+LANG_HOTKEYS = {int(Qt.Key.Key_1): 0, int(Qt.Key.Key_2): 1, int(Qt.Key.Key_3): 2, int(Qt.Key.Key_4): 3}
+MOD_BLOCK = (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+             | Qt.KeyboardModifier.MetaModifier)
 RES_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))      # ресурсы (и в .exe тоже)
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 
@@ -304,7 +307,7 @@ I18N = {
         "hint_dual": "Ctrl — {a}   ·   Alt — {b}",
         "hint_key": "{key}: short press — dot, long press — dash",
         "hint_space": "   ·   Space: commit the letter, or insert a space if there is none",
-        "hint_keys2": "Backspace — delete   ·   Esc — cancel the letter, Esc twice — clear everything",
+        "hint_keys2": "Backspace — delete   ·   Esc — undo the last letter, Esc twice — clear everything",
         "set_title": "Settings",
         "sec_lang": "LANGUAGE", "ui_lang": "App language", "ui_lang_sub": "Applied immediately",
         "sec_timing": "TIMING",
@@ -330,7 +333,6 @@ I18N = {
         "confirm_yes": "Reset", "confirm_no": "Cancel",
         "g_title": "GAME", "g_score": "Correct: {a}    Mistakes: {b}",
         "g_words": "Words", "g_phrases": "Phrases", "g_short": "Short", "g_long": "Long",
-        "g_hints_on": "Hints: on", "g_hints_off": "Hints: off",
         "g_skip": "Skip", "g_exit": "Exit",
     },
     "ru": {
@@ -348,7 +350,7 @@ I18N = {
         "hint_dual": "Ctrl — {a}   ·   Alt — {b}",
         "hint_key": "{key}: коротко — точка, долго — тире",
         "hint_space": "   ·   Пробел: применить букву, а если буквы нет — поставить пробел",
-        "hint_keys2": "Backspace — стереть   ·   Esc — сбросить букву, Esc дважды — очистить всё",
+        "hint_keys2": "Backspace — стереть   ·   Esc — отменить последнюю букву, Esc дважды — очистить всё",
         "set_title": "Настройки",
         "sec_lang": "ЯЗЫК", "ui_lang": "Язык приложения", "ui_lang_sub": "Применяется сразу",
         "sec_timing": "ТАЙМИНГИ",
@@ -374,7 +376,6 @@ I18N = {
         "confirm_yes": "Сбросить", "confirm_no": "Отмена",
         "g_title": "ИГРА", "g_score": "Верно: {a}    Ошибок: {b}",
         "g_words": "Слова", "g_phrases": "Фразы", "g_short": "Короткие", "g_long": "Длинные",
-        "g_hints_on": "Подсказки: вкл", "g_hints_off": "Подсказки: выкл",
         "g_skip": "Пропуск", "g_exit": "Выход",
     },
 }
@@ -670,7 +671,21 @@ class Engine(QObject):
             self.clear_all()
         else:
             self.esc_t = now
+            self.undo_last()
+
+    def undo_last(self):
+        """Один Esc: отменяет последнюю введённую букву — набираемую или уже зафиксированную
+        (вместе с авто-пробелом после неё, если он успел появиться)."""
+        self.wt.stop()
+        if self.seq:
             self.cancel()
+            return
+        while self.items and self.items[-1][0] == " ":
+            self.items.pop()
+        if self.items:
+            self.items.pop()
+        self.lt.stop()
+        self.changed.emit()
 
     def commit(self):
         if not self.seq:
@@ -896,6 +911,8 @@ class FlatButton(QWidget):
 
 class Segmented(QWidget):
     changed = Signal(str)
+    scrubbed = Signal(float)            # положение ползунка (в пунктах) — пока его тащат и пока он доезжает
+    scrub_done = Signal()               # ползунок остановился
 
     def __init__(self, items, value, h=38, pad=30, parent=None, drag=False):
         super().__init__(parent)
@@ -905,6 +922,8 @@ class Segmented(QWidget):
         self._pos = float(self._idx())
         self._dragging = False
         self._dtarget, self._grab, self._v, self._grow = self._pos, 0.0, 0.0, 0.0
+        self._scrubbing = self._moved = False
+        self._press = None                  # (x, пункт) нажатия: клик это или перетаскивание, станет ясно по движению
         self._spring = QTimer(self)         # пружинка ползунка
         self._spring.setInterval(16)
         self._spring.timeout.connect(self._spring_tick)
@@ -957,6 +976,10 @@ class Segmented(QWidget):
         self.value = v
         self._spring.stop()
         self._dragging, self._v, self._grow = False, 0.0, 0.0
+        self._press = None
+        if self._scrubbing:
+            self._scrubbing = False
+            self.scrub_done.emit()
         if animate:
             self.anim.stop()
             self.anim.setStartValue(self._pos)
@@ -984,6 +1007,11 @@ class Segmented(QWidget):
             self.value = key
             self.changed.emit(key)
 
+    def _clamp_pos(self):
+        en = self._enabled_idx()
+        lo, hi = (float(en[0]), float(en[-1])) if en else (0.0, float(len(self.items) - 1))
+        return max(lo, min(hi, self._pos))
+
     def _spring_tick(self):
         d = self._dtarget - self._pos
         self._v = (self._v + d * 0.22) * 0.62                    # лёгкая пружина с небольшим «перелётом»
@@ -991,10 +1019,16 @@ class Segmented(QWidget):
         n = len(self.items) - 1
         self._pos = max(-0.15, min(n + 0.15, self._pos))
         self._grow += ((1.0 if self._dragging else 0.0) - self._grow) * 0.3
-        if (not self._dragging and abs(d) < 0.002 and abs(self._v) < 0.002
-                and self._grow < 0.01):
+        done = (not self._dragging and abs(d) < 0.002 and abs(self._v) < 0.002
+                and self._grow < 0.01)
+        if done:
             self._pos, self._v, self._grow = self._dtarget, 0.0, 0.0
             self._spring.stop()
+        if self._scrubbing:                                      # дерево едет за ползунком кадр в кадр
+            self.scrubbed.emit(self._clamp_pos())
+            if done:
+                self._scrubbing = False
+                self.scrub_done.emit()
         self.update()
 
     def mousePressEvent(self, e):
@@ -1008,9 +1042,11 @@ class Segmented(QWidget):
             self.anim.stop()
             # если схватили сам ползунок — не даём ему «прыгнуть» под курсор
             self._grab = (self._pos - raw) if abs(self._pos - raw) < 0.5 else 0.0
+            self._press, self._moved = (e.position().x(), i), False
             self._dragging = True
+            if not self._scrubbing:
+                self._dtarget = self._pos                       # пока не ясно, клик это или перетаскивание — стоим
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
-            self._drag_to(raw + self._grab)
             if not self._spring.isActive():
                 self._spring.start()
             return
@@ -1024,16 +1060,33 @@ class Segmented(QWidget):
             self.changed.emit(key)
 
     def mouseMoveEvent(self, e):
-        if self.drag and self._dragging:
-            self._drag_to(self._raw(e) + self._grab)
+        if not (self.drag and self._dragging and self._press is not None):
+            return
+        if not self._moved:
+            if abs(e.position().x() - self._press[0]) < 4:
+                return                                          # дрожание руки — ещё не перетаскивание
+            self._moved = True
+            self._scrubbing = True
+            self.scrubbed.emit(self._clamp_pos())               # дерево переходит в режим «ползунка» до первого переключения
+        self._drag_to(self._raw(e) + self._grab)
 
     def mouseReleaseEvent(self, e):
-        if self.drag and self._dragging:
-            self._dragging = False
-            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        if not (self.drag and self._dragging):
+            return
+        self._dragging = False
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        if self._moved:
             self._dtarget = float(self._idx())                  # отпустили — прилипаем к ближайшему пункту
-            if not self._spring.isActive():
-                self._spring.start()
+        else:                                                   # обычный клик — как раньше
+            i = self._press[1] if self._press else self._idx()
+            self._dtarget = float(i)
+            key = self.items[i][0]
+            if key != self.value:
+                self.value = key
+                self.changed.emit(key)
+        self._press, self._moved = None, False
+        if not self._spring.isActive():
+            self._spring.start()
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -1143,7 +1196,7 @@ class Brand(QWidget):
         p.drawRoundedRect(QRectF(16, 17, 12, 6), 3, 3)
         p.setFont(font(18, W_SEMI))
         p.setPen(col(TXT))
-        p.drawText(QRectF(46, 1, 150, 22), AL_L, "PhMorse v1.0.3")
+        p.drawText(QRectF(46, 1, 150, 22), AL_L, "PhMorse v1.0.4")
         p.setFont(font(11, W_NORMAL))
         p.setPen(col(DIM))
         p.drawText(QRectF(46, 22, 150, 16), AL_L, tr("brand_sub"))
@@ -1404,12 +1457,13 @@ class TreeView(QWidget):
         super().__init__(parent)
         self.engine, self.st = engine, st
         self.glow, self.hot = {}, 0.0
-        self.override_letters = None      # игра может принудительно скрыть/показать буквы
         self.pos, self.letters, self.extra = {}, {}, set()
         self._lang = None
         self._from = None                 # снимок сцены, из которой едем
         self._ghost = {}                  # свечение уходящих узлов
         self._t0 = None                   # время старта анимации
+        self._scrub = None                # (дерево A, дерево B, доля) — пока тащат переключатель
+        self._infos, self._tcache = {}, {}
         self.setMinimumHeight(280)
         self.set_lang(engine.lang)
 
@@ -1418,7 +1472,7 @@ class TreeView(QWidget):
             self.update()
             return
         old_scene = old_glow = None
-        if self._lang is not None and self.isVisible() and self.width() > 50:
+        if self._lang is not None and self.isVisible() and self.width() > 50 and self._scrub is None:
             old_scene = self._scene()[0]            # текущий кадр (даже если прошлая анимация не закончилась)
             old_glow = {**self._ghost, **self.glow}
         self._lang = lang
@@ -1476,24 +1530,43 @@ class TreeView(QWidget):
             self.update()
 
     def letters_visible(self):
-        return self.st["show_letters"] if self.override_letters is None else self.override_letters
+        return bool(self.st["show_letters"])
 
-    def _grid(self):
+    def _info(self, lang):
+        inf = self._infos.get(lang)
+        if inf is None:
+            pos = LAYOUTS[lang]
+            cs = [c for c, _ in pos.values()]
+            rs = [r for _, r in pos.values()]
+            inf = dict(pos=pos, letters={code: ch for ch, code in LANGS[lang].items()},
+                       extra=EXTRA_CODES if lang.startswith("ALL_") else set(),
+                       minc=min(cs), minr=min(rs), ncols=max(cs) - min(cs) + 1, nrows=max(rs) - min(rs) + 1)
+            self._infos[lang] = inf
+        return inf
+
+    def _grid(self, inf):
         area = QRectF(self.rect()).adjusted(18, 54, -18, -20)
-        pitch = min(area.width() / self.ncols, area.height() / self.nrows, 62.0)
-        gw, gh = pitch * self.ncols, pitch * self.nrows
+        pitch = min(area.width() / inf["ncols"], area.height() / inf["nrows"], 62.0)
+        gw, gh = pitch * inf["ncols"], pitch * inf["nrows"]
         return area.left() + (area.width() - gw) / 2, area.top() + (area.height() - gh) * 0.4, pitch
 
     # ---------- сцена: геометрия узлов в пикселях ----------
-    def _target(self):
-        """Где узлы текущего дерева должны стоять в покое: {код: x, y, w, h, a, lets}."""
-        x0, y0, pitch = self._grid()
-        pts = {code: QPointF(x0 + (c - self.minc + .5) * pitch, y0 + (rr - self.minr + .5) * pitch)
-               for code, (c, rr) in self.pos.items()}
-        L0, T0, R0 = pitch * 0.90, pitch * 0.58, pitch * 0.36
+    def _target(self, lang=None):
+        """Где узлы дерева должны стоять в покое: {код: x, y, w, h, a, lets} и шаг сетки."""
+        lang = lang or self._lang
+        key = (lang, self.width(), self.height(), THEME["name"])
+        hit = self._tcache.get(key)
+        if hit is not None:
+            return hit
+        inf = self._info(lang)
+        letters, extra = inf["letters"], inf["extra"]
+        x0, y0, pitch = self._grid(inf)
+        pts = {code: QPointF(x0 + (c - inf["minc"] + .5) * pitch, y0 + (rr - inf["minr"] + .5) * pitch)
+               for code, (c, rr) in inf["pos"].items()}
+        L0, T0, R0 = pitch * 0.90, pitch * 0.44, pitch * 0.36
         out = {}
         for code, pt in pts.items():
-            sc = 1.0 if (not code or code in self.letters) else 0.6    # безымянные узлы цифрового дерева
+            sc = 1.0 if (not code or code in letters) else 0.6    # безымянные узлы цифрового дерева
             L, T, R = L0 * sc, T0 * sc, R0 * sc
             if not code or code[-1] == ".":
                 w = h = 2 * R
@@ -1501,13 +1574,36 @@ class TreeView(QWidget):
                 par = pts[code[:-1]]
                 w, h = (T, L) if abs(par.x() - pt.x()) < 1 else (L, T)     # пришли по вертикали / по горизонтали
             lets = []
-            if code and code in self.letters:
-                lets = [(self.letters[code], 1.0, LET_EXTRA if code in self.extra else MID)]
+            if code and code in letters:
+                lets = [(letters[code], 1.0, LET_EXTRA if code in extra else MID)]
             out[code] = dict(x=pt.x(), y=pt.y(), w=w, h=h, a=1.0, lets=lets)
+        if len(self._tcache) > 24:
+            self._tcache.clear()
+        self._tcache[key] = (out, pitch)
         return out, pitch
+
+    def scrub(self, a, b, fr):
+        """Переключатель тащат: сцена — это смесь деревьев a и b в пропорции fr, без таймера."""
+        if self._scrub is None:
+            self._from, self._ghost, self._t0 = None, {}, None     # обычная анимация больше не нужна
+        self._scrub = (a, b, max(0.0, min(1.0, fr)))
+        self.update()
+
+    def end_scrub(self):
+        self._scrub = None
+        self.update()
 
     def _scene(self):
         """Текущий кадр: (сцена, pitch, прогресс 0..1)."""
+        if self._scrub is not None:
+            a, b, fr = self._scrub
+            Ta, pa = self._target(a)
+            if fr < 0.0005:
+                return Ta, pa, 0.0
+            Tb, pb = self._target(b)
+            if fr > 0.9995:
+                return Tb, pb, 1.0
+            return self._blend(Ta, Tb, fr, linear=True), _lerp(pa, pb, fr), fr
         T, pitch = self._target()
         if self._from is not None and self._t0 is not None:
             pr = (time.perf_counter() - self._t0) / self.ANIM_S
@@ -1515,11 +1611,11 @@ class TreeView(QWidget):
                 return self._blend(self._from, T, max(0.0, pr)), pitch, max(0.0, pr)
         return T, pitch, 1.0
 
-    def _blend(self, F, T, pr):
+    def _blend(self, F, T, pr, linear=False):
         """Смешивает старую сцену F и новую T:
         общие узлы плавно едут, новые вырастают из родителя, ушедшие втягиваются в родителя;
         старые символы гаснут в первой половине, новые проявляются во второй."""
-        e = _ease(pr)
+        e = pr if linear else _ease(pr)       # при перетаскивании движение напрямую зависит от руки
         fo = _smooth(pr / 0.45)               # старые символы гаснут
         fi = _smooth((pr - 0.45) / 0.55)      # новые символы проявляются
         fa = _smooth(pr * 1.5)                # появление / исчезновение самих узлов
@@ -1611,7 +1707,9 @@ class TreeView(QWidget):
             hot = self.hot if code == e.flash_code else 0.0
             w, h = max(1.0, n["w"]), max(1.0, n["h"])
             rect = QRectF(pt.x() - w / 2, pt.y() - h / 2, w, h)
-            rad = min(w, h) / 2
+            mn, mx = min(w, h), max(w, h)
+            k = max(0.0, min(1.0, (mx / mn - 1.0) / 0.6))      # 0 — круг (точка), 1 — вытянутое тире
+            rad = mn * (0.5 - 0.2 * k)                          # тире: углы скруглены слабее, чем у капсулы
             if g > 0.02:
                 rg = QRadialGradient(pt, pitch * 1.0)
                 rg.setColorAt(0.0, col(ACC if not hot else "#E9D5FF", int(150 * min(1, g) * a)))
@@ -1841,9 +1939,6 @@ class SettingsDialog(QDialog):
         scroll.setWidget(body)
         outer.addWidget(scroll, 1)
 
-        self.section(tr("sec_lang"))
-        self.lang_row()
-
         self.section(tr("sec_timing"))
         self.slider(tr("dot_dash"), "dot_dash_ms", 80, 600, 10, tr("ms"), tr("dot_dash_sub"))
         self.slider(tr("letter_gap"), "letter_gap_ms", 250, 2000, 50, tr("ms"), tr("letter_gap_sub"))
@@ -1871,6 +1966,9 @@ class SettingsDialog(QDialog):
         self.segmented(tr("theme"), "theme", [("dark", tr("theme_dark")), ("light", tr("theme_light"))],
                        tr("theme_sub"))
         self.toggle(tr("on_top"), "on_top", tr("on_top_sub"))
+
+        self.section(tr("sec_lang"))
+        self.lang_row()
         self.vl.addStretch(1)
 
         foot = QWidget()
@@ -2028,34 +2126,147 @@ class SettingsDialog(QDialog):
 
 
 # ---------- игра ----------
+def _w(*chunks):
+    """Слова через пробел -> список без повторов."""
+    out = []
+    for c in chunks:
+        out += c.split()
+    return list(dict.fromkeys(out))
+
+
+def _p(*chunks):
+    """Фразы через « | » -> список без повторов."""
+    out = []
+    for c in chunks:
+        out += [s.strip() for s in c.split("|") if s.strip()]
+    return list(dict.fromkeys(out))
+
+
+EN_WORDS = _w(
+    "SOS HELLO WORLD MORSE CODE RADIO SIGNAL WAVE KEY DASH DOT PURPLE NIGHT STAR GAME LIGHT MOON SPACE TRAIN QUICK "
+    "JAZZ FOX BRAVO ALPHA DELTA ZULU VICTORY PIANO GUITAR MUSIC",
+    "OCEAN RIVER FOREST MOUNTAIN DESERT ISLAND THUNDER LIGHTNING RAINBOW SUNSET SUNRISE WINTER SUMMER AUTUMN SPRING "
+    "GARDEN FLOWER CASTLE DRAGON KNIGHT WIZARD PIRATE TREASURE COMPASS ANCHOR HARBOR LANTERN CANDLE MIRROR WINDOW "
+    "BRIDGE TUNNEL TOWER ROCKET PLANET GALAXY COMET METEOR ORBIT SATELLITE ASTRONAUT TELESCOPE CAMERA PICTURE "
+    "PENCIL NOTEBOOK LIBRARY SCHOOL TEACHER STUDENT DOCTOR PILOT SAILOR FARMER BAKER",
+    "COFFEE TEA BREAD CHEESE APPLE ORANGE LEMON BANANA CHERRY PEPPER HONEY SUGAR BUTTER COOKIE PIZZA BURGER SALAD "
+    "SOUP PASTA CHOCOLATE",
+    "TIGER LION EAGLE WOLF HORSE RABBIT TURTLE DOLPHIN PENGUIN BUTTERFLY SPIDER OWL BEAR PANDA KOALA FALCON",
+    "SECRET MYSTERY PUZZLE RIDDLE MESSAGE TELEGRAPH ENCODE DECODE CIPHER SILENCE FREEDOM COURAGE HARMONY RHYTHM "
+    "MELODY DRUM VIOLIN TRUMPET FLUTE SPARK FLAME SHADOW WHISPER ECHO NEON PIXEL ROBOT CYBER LASER KEYBOARD MOUSE "
+    "SCREEN BUTTON SWITCH CIRCUIT BATTERY ANTENNA TRANSMIT RECEIVE FREQUENCY",
+    "ADVENTURE JOURNEY EXPLORER VOYAGE HORIZON LIGHTHOUSE MIDNIGHT MORNING EVENING WEEKEND HOLIDAY BIRTHDAY "
+    "FRIEND FAMILY NEIGHBOR STRANGER HERO LEGEND QUEST BATTLE VICTORY CHAMPION JUNGLE VOLCANO GLACIER CANYON "
+    "WATERFALL MEADOW BLIZZARD BREEZE STORM CLOUD FROZEN BRIGHT SILVER GOLDEN CRIMSON VIOLET AMBER",
+)
+EN_PHRASES = _p(
+    "HELLO WORLD | SOS SOS SOS | GOOD MORNING | THE QUICK BROWN FOX | MORSE CODE IS FUN | SEE YOU SOON | HOW ARE YOU | "
+    "STAY SAFE | KEEP IT UP | I LOVE MUSIC | LET US PLAY | NICE TO MEET YOU | THANK YOU | WELCOME BACK | HAVE A NICE DAY",
+    "GOOD NIGHT | GOOD LUCK | SEE YOU LATER | WHAT IS YOUR NAME | MY NAME IS MORSE | I NEED HELP | COME IN PLEASE | "
+    "OVER AND OUT | ROGER THAT | MESSAGE RECEIVED | STAND BY | ALL CLEAR | LOUD AND CLEAR | MAYDAY MAYDAY MAYDAY | "
+    "SAVE OUR SHIPS | DOTS AND DASHES | TAP TAP TAP | SEND MORE SIGNALS | I CAN TYPE IN MORSE",
+    "PRACTICE MAKES PERFECT | BETTER LATE THAN NEVER | ACTIONS SPEAK LOUDER THAN WORDS | THE EARLY BIRD CATCHES "
+    "THE WORM | LOOK BEFORE YOU LEAP | TIME IS MONEY | KNOWLEDGE IS POWER | BREAK A LEG | PIECE OF CAKE | "
+    "ONCE IN A BLUE MOON | THE SKY IS THE LIMIT | DREAM BIG | NEVER GIVE UP | STAY CURIOUS | BE KIND | "
+    "ENJOY THE MOMENT | SMALL STEPS EVERY DAY | EVERY DAY IS A NEW START | LESS IS MORE | SLOW AND STEADY",
+    "THE WAVES ARE CALLING | THE LIGHTHOUSE IS ON | THE SHIP SAILS AT DAWN | MEET ME AT MIDNIGHT | THE EAGLE HAS "
+    "LANDED | HOUSTON WE HAVE A PROBLEM | WHERE ARE YOU NOW | WHAT IS NEW | IT IS A SECRET | THE STARS ARE BRIGHT | "
+    "THE MOON IS FULL | A STORM IS COMING | THE SEA IS CALM | I SEE LAND | FULL SPEED AHEAD | LAND AHEAD | "
+    "THE KEY IS UNDER THE MAT | PLEASE REPEAT THAT | I DO NOT UNDERSTAND | SPEAK SLOWLY PLEASE | WE ARE ON THE AIR",
+)
+RU_WORDS = _w(
+    "ПРИВЕТ МИР МОРЗЕ КОД РАДИО СИГНАЛ ТОЧКА ТИРЕ ЗВЕЗДА НОЧЬ СВЕТ ЛУНА ИГРА ГИТАРА МУЗЫКА ПОБЕДА ДРУГ ВЕСНА ОГОНЬ "
+    "ВОЛНА СОЛНЦЕ РЕКА ЛЕТО ЗИМА МАШИНА ПЕСНЯ БУКВА КЛЮЧ ЭХО ЮБКА ЯБЛОКО ШОКОЛАД",
+    "МОРЕ ГОРА ЛЕС ПОЛЕ ОЗЕРО ОСТРОВ ГРОМ МОЛНИЯ РАДУГА ЗАКАТ РАССВЕТ ОСЕНЬ ЦВЕТОК САД ЗАМОК ДРАКОН РЫЦАРЬ ПИРАТ КЛАД "
+    "КОМПАС ЯКОРЬ ПОРТ ФОНАРЬ СВЕЧА ЗЕРКАЛО ОКНО МОСТ БАШНЯ РАКЕТА ПЛАНЕТА ГАЛАКТИКА КОМЕТА ОРБИТА СПУТНИК КОСМОС "
+    "КАМЕРА КАРТИНА КАРАНДАШ ТЕТРАДЬ БИБЛИОТЕКА ШКОЛА УЧИТЕЛЬ ВРАЧ ПИЛОТ МОРЯК ФЕРМЕР ПЕКАРЬ",
+    "КОФЕ ЧАЙ ХЛЕБ СЫР АПЕЛЬСИН ЛИМОН БАНАН ВИШНЯ ПЕРЕЦ МЕД САХАР МАСЛО ПЕЧЕНЬЕ ПИЦЦА СУП МОРОЖЕНОЕ ПЕЛЬМЕНИ БЛИНЫ",
+    "ТИГР ЛЕВ ОРЕЛ ВОЛК КОНЬ КРОЛИК ЧЕРЕПАХА ДЕЛЬФИН ПИНГВИН БАБОЧКА ПАУК СОВА МЕДВЕДЬ ПАНДА СОКОЛ КОШКА СОБАКА",
+    "СЕКРЕТ ТАЙНА ЗАГАДКА ГОЛОВОЛОМКА СООБЩЕНИЕ ТЕЛЕГРАФ ШИФР ТИШИНА СВОБОДА СМЕЛОСТЬ ГАРМОНИЯ РИТМ МЕЛОДИЯ БАРАБАН "
+    "СКРИПКА ТРУБА ФЛЕЙТА ИСКРА ПЛАМЯ ТЕНЬ ШЕПОТ НЕОН РОБОТ ЛАЗЕР КЛАВИАТУРА МЫШЬ ЭКРАН КНОПКА ВЫКЛЮЧАТЕЛЬ БАТАРЕЯ "
+    "АНТЕННА ЧАСТОТА",
+    "ПРИКЛЮЧЕНИЕ ПУТЕШЕСТВИЕ ИССЛЕДОВАТЕЛЬ ГОРИЗОНТ МАЯК ПОЛНОЧЬ УТРО ВЕЧЕР ВЫХОДНЫЕ ПРАЗДНИК ДРУЗЬЯ СЕМЬЯ СОСЕД "
+    "ГЕРОЙ ЛЕГЕНДА БИТВА ЧЕМПИОН ДЖУНГЛИ ВУЛКАН ЛЕДНИК КАНЬОН ВОДОПАД ЛУГ МЕТЕЛЬ ВЕТЕРОК БУРЯ ОБЛАКО СЕРЕБРО ЗОЛОТО "
+    "ЯНТАРЬ ФИОЛЕТОВЫЙ",
+)
+RU_PHRASES = _p(
+    "ПРИВЕТ МИР | ДОБРОЕ УТРО | КАК ДЕЛА | ДО ВСТРЕЧИ | СПАСИБО БОЛЬШОЕ | АЗБУКА МОРЗЕ | ЭТО ПРОСТО | ХОРОШЕГО ДНЯ | "
+    "Я ТЕБЯ ЛЮБЛЮ | ЖИЗНЬ ПРЕКРАСНА | МИР ТРУД МАЙ | ТИШЕ ЕДЕШЬ ДАЛЬШЕ БУДЕШЬ",
+    "СПОКОЙНОЙ НОЧИ | УДАЧИ ТЕБЕ | ДО СКОРОГО | КАК ТЕБЯ ЗОВУТ | МЕНЯ ЗОВУТ МОРЗЕ | МНЕ НУЖНА ПОМОЩЬ | ПРИЕМ ПРИЕМ | "
+    "ВЫХОЖУ НА СВЯЗЬ | СООБЩЕНИЕ ПРИНЯТО | ВСЕ ХОРОШО | ПОНЯЛ ПРИНЯЛ | СИГНАЛ БЕДСТВИЯ | СПАСИТЕ НАШИ ДУШИ | "
+    "ТОЧКИ И ТИРЕ | ЖДУ ТВОЕГО СИГНАЛА | Я УМЕЮ ПЕЧАТАТЬ АЗБУКОЙ МОРЗЕ",
+    "ПОВТОРЕНИЕ МАТЬ УЧЕНИЯ | СЕМЬ РАЗ ОТМЕРЬ ОДИН РАЗ ОТРЕЖЬ | БЕЗ ТРУДА НЕ ВЫТАЩИШЬ РЫБКУ ИЗ ПРУДА | "
+    "ВРЕМЯ ДЕНЬГИ | ЗНАНИЕ СИЛА | НИКОГДА НЕ СДАВАЙСЯ | БУДЬ ДОБРЕЕ | ЦЕНИ МОМЕНТ | МАЛЕНЬКИМИ ШАГАМИ | "
+    "ЛУЧШЕ ПОЗДНО ЧЕМ НИКОГДА | УТРО ВЕЧЕРА МУДРЕНЕЕ | ТЕРПЕНИЕ И ТРУД ВСЕ ПЕРЕТРУТ | ДЕЛУ ВРЕМЯ ПОТЕХЕ ЧАС | "
+    "ЛЕГКО НА СЕРДЦЕ | КАЖДЫЙ ДЕНЬ НОВОЕ НАЧАЛО | МЕНЬШЕ ЗНАЧИТ БОЛЬШЕ",
+    "МАЯК ГОРИТ | ВОЛНЫ ЗОВУТ | ВСТРЕТИМСЯ В ПОЛНОЧЬ | КОРАБЛЬ УХОДИТ НА РАССВЕТЕ | ПРИШЛО ВРЕМЯ ИГРАТЬ | "
+    "ГДЕ ТЫ СЕЙЧАС | ЧТО НОВОГО | ЭТО СЕКРЕТ | ЗВЕЗДЫ ЯРКИЕ | ЛУНА ПОЛНАЯ | ИДЕТ БУРЯ | МОРЕ СПОКОЙНО | ВИЖУ ЗЕМЛЮ | "
+    "ПОЛНЫЙ ВПЕРЕД | ЗЕМЛЯ ВПЕРЕДИ | ПОВТОРИТЕ ПОЖАЛУЙСТА | Я НЕ ПОНИМАЮ | ГОВОРИТЕ МЕДЛЕННЕЕ | МЫ В ЭФИРЕ",
+)
+NUM_SHORT = _w(
+    "7 42 112 911 2026 314 100 58 365 1999",
+    "0 1 2 3 4 5 6 8 9 10 12 13 21 24 60 99 123 256 404 500 777 808 1000 1984 2000 2024 2025 2027 3600 8080 9999 007 "
+    "1812 1945 1961 1969 1991 2012 4096 65536 31337 90210 1024 2048",
+)
+NUM_LONG = _w(
+    "3141592 1234567890 8005553535 20260101 987654321 1000000 24601 5551234",
+    "3141592653 271828182 1618033988 0987654321 112233445566 24681012 13579 2026202720 01012026 31122026 "
+    "1357924680 9081726354 1122334455 5432109876 10203040506 123123123 456456456 777888999 1029384756 "
+    "2468013579 1000000000 4815162342",
+)
+SYM_SHORT = _w(
+    "? ! ?! ... ., () += @ & _ - : ; / !!! ???",
+    ". , ' ( ) = + ?? !! ?!? !?! -- __ // && @@ ++ == :: ;; ,, .. ()() (()) \"\" '' +- =- :) ;) :( :/ :-) ;-) =) :-( "
+    "@_@ -_- (-) (+) (=) (?) (!) (:) (;) (&) (@) +++ === --- ...! ?!. ,.,",
+)
+SYM_LONG = _w(
+    "1+1=2 (2-1) !?!? 3/4=.75 12:30 5-2=3 @1_2 (+) \"5\" 9-5=4 7&3",
+    "?!?!?! (...) ((())) ...---... -.-.-. .-.-.- !?!?!? &&&& @@@@ +-+-+- =+=+=+ /-/-/- :;:;:; ,.,.,. _-_-_- ?!&@ !@&? "
+    "@&@& -=+=- =-=-= :-):-) :-)(-: ;-);-) ()()() (:)(:) ..--.. --..-- .-.-.- ,;,;,; ?-?-?- !-!-!- "
+    "2+2=4 10/2=5 3*3 7-7=0 100-1=99 5+5=10 @2_3 8:00 (1+2)=3 9/3=3 12-3=9 1,2,3 3.14 \"2\" '1' 4&4 6+6=12 (7) 0.5+0.5=1",
+)
+SYM_LONG = [s for s in SYM_LONG if "*" not in s]          # «*» в таблице нет
+
+ALL_EN_SHORT = _w(
+    "R2D2 C3PO B52 F16 K9 4K 3D Q&A R&D WI-FI E-MAIL 7UP A1 H2O CO2",
+    "MP3 MP4 USB USB-C PS5 X-RAY T-REX U-BOAT Y2K UTF-8 HTTP/2 IPV6 PDF WWW. OK! 3-2-1 10/10 24/7 9-TO-5 V8 B2B C++ "
+    "E=MC2 A+B=C 5+5=10 H2O+CO2 AREA51 APOLLO11 ROUTE-66 TOP-5 7-ELEVEN 2-IN-1 4X4 FIFA-26 3D-PRINT",
+)
+ALL_EN_LONG = _p(
+    "CALL 911 | ROOM 101 | AGENT 007 | DON'T PANIC! | WHAT'S UP? | 1+1=2 | DIAL 112 | R2-D2 | AT 8:30 SHARP | "
+    "HELLO, WORLD! | PAGE 3/4 | SOS 112",
+    "I HAVE 2 CATS | MEET AT 7:45 | TOP 10 SONGS | BUY 2 GET 1 FREE | SCORE: 3-2 | EXIT 42 NEXT | E=MC2 IS FAMOUS | "
+    "WHERE'S MY KEY? | IT'S 5 O'CLOCK! | LET'S GO! | YES, I CAN! | NO WAY!!! | ROUTE 66 | TABLE FOR 4 PLEASE | "
+    "THE YEAR IS 2026 | ONLY 24 HOURS LEFT! | ROOM 404: NOT FOUND | MY EMAIL: A@B.COM | CALL ME @ 9:15 | A&B=C | "
+    "(PLEASE) WAIT 5 MIN | WIN-WIN | OK; SEE YOU @ 6 | WAIT... WHAT?! | 2+2=4, 3+3=6 | TASK 1/3 DONE | "
+    "COUNT: 1, 2, 3! | LEVEL 7 COMPLETE | PLAYER 1 READY | CHAPTER 12: THE END | SEAT 14B | GATE 9 OPENS AT 6:30 | "
+    "I'LL BE THERE IN 5 | IT COSTS 20 DOLLARS | THE ANSWER IS 42 | 3 + 4 = 7 | HIGH FIVE! | GOOD JOB, TEAM!",
+)
+ALL_RU_SHORT = _w(
+    "Т-34 Ф-16 3Д 4К 1С Н2О СО2 ТОП-10 АК-47 МИР-2",
+    "КО2 ИЛ-2 МИ-8 ТУ-154 АН-2 СУ-27 МИГ-29 ВАЗ-2107 ПОЕЗД-5 ЭТАЖ-3 КВ-12 ДОМ-7 3Д-ИГРА 2-В-1 24/7 100/100 5+5=10 "
+    "А+Б=В Е=МС2 ЕГЭ-2026 ОК! ДА! НЕТ? ХА-ХА! ЭХ... ВАУ!",
+)
+ALL_RU_LONG = _p(
+    "ЗВОНИ 112 | КОМНАТА 101 | ПРИВЕТ, МИР! | КАК ДЕЛА? | ЧТО? ГДЕ? КОГДА? | 2+2=4 | ДОМ 12/3 | "
+    "В 8:30 У ВОКЗАЛА | ДА, ЭТО Я!",
+    "У МЕНЯ 2 КОТА | ВСТРЕЧА В 19:45 | ТОП 10 ПЕСЕН | ПОКУПАЙ 2 ПОЛУЧИ 3 | СЧЕТ: 3-2 | ВЫХОД 42 | ГДЕ МОЙ КЛЮЧ? | "
+    "УЖЕ 5 ЧАСОВ! | ПОЕХАЛИ! | ДА, Я МОГУ! | НИ ЗА ЧТО!!! | СТОЛ НА 4 ПЕРСОНЫ | СЕЙЧАС 2026 ГОД | ОСТАЛОСЬ 24 ЧАСА! | "
+    "ОШИБКА 404: НЕ НАЙДЕНО | ЗВОНИ В 9:15 | А И Б=В | (ПОЖАЛУЙСТА) ЖДИ 5 МИНУТ | ОК; ДО ВСТРЕЧИ В 6 | ЖДИ... ЧТО?! | "
+    "2+2=4, 3+3=6 | ЗАДАЧА 1/3 ГОТОВА | СЧЕТ: 1, 2, 3! | УРОВЕНЬ 7 ПРОЙДЕН | ИГРОК 1 ГОТОВ | ГЛАВА 12: КОНЕЦ | "
+    "МЕСТО 14Б | ПОСАДКА В 6:30 | Я БУДУ ЧЕРЕЗ 5 МИНУТ | ОТВЕТ 42 | 3 + 4 = 7 | ДАЙ ПЯТЬ! | МОЛОДЦЫ, КОМАНДА!",
+)
+
 GAME_POOLS = {
-    ("EN", 0): ["SOS", "HELLO", "WORLD", "MORSE", "CODE", "RADIO", "SIGNAL", "WAVE", "KEY", "DASH", "DOT",
-                "PURPLE", "NIGHT", "STAR", "GAME", "LIGHT", "MOON", "SPACE", "TRAIN", "QUICK", "JAZZ", "FOX",
-                "BRAVO", "ALPHA", "DELTA", "ZULU", "VICTORY", "PIANO", "GUITAR", "MUSIC"],
-    ("EN", 1): ["HELLO WORLD", "SOS SOS SOS", "GOOD MORNING", "THE QUICK BROWN FOX", "MORSE CODE IS FUN",
-                "SEE YOU SOON", "HOW ARE YOU", "STAY SAFE", "KEEP IT UP", "I LOVE MUSIC", "LET US PLAY",
-                "NICE TO MEET YOU", "THANK YOU", "WELCOME BACK", "HAVE A NICE DAY"],
-    ("RU", 0): ["ПРИВЕТ", "МИР", "МОРЗЕ", "КОД", "РАДИО", "СИГНАЛ", "ТОЧКА", "ТИРЕ", "ЗВЕЗДА", "НОЧЬ", "СВЕТ",
-                "ЛУНА", "ИГРА", "ГИТАРА", "МУЗЫКА", "ПОБЕДА", "ДРУГ", "ВЕСНА", "ОГОНЬ", "ВОЛНА", "СОЛНЦЕ",
-                "РЕКА", "ЛЕТО", "ЗИМА", "МАШИНА", "ПЕСНЯ", "БУКВА", "КЛЮЧ", "ЭХО", "ЮБКА", "ЯБЛОКО", "ШОКОЛАД"],
-    ("RU", 1): ["ПРИВЕТ МИР", "ДОБРОЕ УТРО", "КАК ДЕЛА", "ДО ВСТРЕЧИ", "СПАСИБО БОЛЬШОЕ", "АЗБУКА МОРЗЕ",
-                "ЭТО ПРОСТО", "ХОРОШЕГО ДНЯ", "Я ТЕБЯ ЛЮБЛЮ", "ЖИЗНЬ ПРЕКРАСНА", "МИР ТРУД МАЙ",
-                "ТИШЕ ЕДЕШЬ ДАЛЬШЕ БУДЕШЬ"],
-    ("NUM", 0): ["7", "42", "112", "911", "2026", "314", "100", "58", "365", "1999"],
-    ("NUM", 1): ["3141592", "1234567890", "8005553535", "20260101", "987654321", "1000000", "24601", "5551234"],
-    ("SYM", 0): ["?", "!", "?!", "...", ".,", "()", "+=", "@", "&", "_", "-", ":;", "/", "!!!", "???"],
-    ("SYM", 1): ["1+1=2", "(2-1)", "!?!?", "3/4=.75", "12:30", "5-2=3", "@1_2", "(+)", '"5"', "9-5=4", "7&3"],
+    ("EN", 0): EN_WORDS, ("EN", 1): EN_PHRASES,
+    ("RU", 0): RU_WORDS, ("RU", 1): RU_PHRASES,
+    ("NUM", 0): NUM_SHORT, ("NUM", 1): NUM_LONG,
+    ("SYM", 0): SYM_SHORT, ("SYM", 1): SYM_LONG,
+    ("ALL_EN", 0): list(dict.fromkeys(EN_WORDS + ALL_EN_SHORT)),
+    ("ALL_EN", 1): list(dict.fromkeys(EN_PHRASES + ALL_EN_LONG)),
+    ("ALL_RU", 0): list(dict.fromkeys(RU_WORDS + ALL_RU_SHORT)),
+    ("ALL_RU", 1): list(dict.fromkeys(RU_PHRASES + ALL_RU_LONG)),
 }
-GAME_POOLS[("ALL_EN", 0)] = GAME_POOLS[("EN", 0)] + [
-    "R2D2", "C3PO", "B52", "F16", "K9", "4K", "3D", "Q&A", "R&D", "WI-FI", "E-MAIL", "7UP", "A1", "H2O", "CO2"]
-GAME_POOLS[("ALL_EN", 1)] = GAME_POOLS[("EN", 1)] + [
-    "CALL 911", "ROOM 101", "AGENT 007", "DON'T PANIC!", "WHAT'S UP?", "1+1=2", "DIAL 112", "R2-D2",
-    "AT 8:30 SHARP", "HELLO, WORLD!", "PAGE 3/4", "SOS 112"]
-GAME_POOLS[("ALL_RU", 0)] = GAME_POOLS[("RU", 0)] + [
-    "Т-34", "Ф-16", "3Д", "4К", "1С", "Н2О", "СО2", "ТОП-10", "АК-47", "МИР-2"]
-GAME_POOLS[("ALL_RU", 1)] = GAME_POOLS[("RU", 1)] + [
-    "ЗВОНИ 112", "КОМНАТА 101", "ПРИВЕТ, МИР!", "КАК ДЕЛА?", "ЧТО? ГДЕ? КОГДА?", "2+2=4", "ДОМ 12/3",
-    "В 8:30 У ВОКЗАЛА", "ДА, ЭТО Я!"]
 
 
 class GameBar(QWidget):
@@ -2064,20 +2275,17 @@ class GameBar(QWidget):
     def __init__(self, engine, tree, parent=None):
         super().__init__(parent)
         self.engine, self.tree = engine, tree
-        self.active, self.hints, self.cat = False, True, 0
+        self.active, self.cat = False, 0
         self.target, self.score, self.miss = "", 0, 0
         self.ok_until = self.bad_until = 0.0
         self.busy = self.guard = self._was_flash = False
         self.setFixedHeight(124)
         self.seg_a = Segmented([("0", tr("g_words")), ("1", tr("g_phrases"))], "0", h=32, pad=18, parent=self)
         self.seg_b = Segmented([("0", tr("g_short")), ("1", tr("g_long"))], "0", h=32, pad=18, parent=self)
-        self.b_hint = FlatButton(tr("g_hints_on"), parent=self)
-        self.b_hint.active = True
         self.b_skip = FlatButton(tr("g_skip"), parent=self)
         self.b_exit = FlatButton(tr("g_exit"), parent=self)
         self.seg_a.changed.connect(self._cat)
         self.seg_b.changed.connect(self._cat)
-        self.b_hint.clicked.connect(self.toggle_hints)
         self.b_skip.clicked.connect(self.new_target)
         self.b_exit.clicked.connect(self.exit_requested.emit)
         self.hide()
@@ -2088,7 +2296,6 @@ class GameBar(QWidget):
     def retranslate(self):
         self.seg_a.set_items([("0", tr("g_words")), ("1", tr("g_phrases"))])
         self.seg_b.set_items([("0", tr("g_short")), ("1", tr("g_long"))])
-        self.b_hint.setText(tr("g_hints_on") if self.hints else tr("g_hints_off"))
         self.b_skip.setText(tr("g_skip"))
         self.b_exit.setText(tr("g_exit"))
         self.place()
@@ -2101,7 +2308,6 @@ class GameBar(QWidget):
         self.seg_b.setVisible(not a)
         seg = self.seg_a if a else self.seg_b
         seg.move(22, y)
-        self.b_hint.move(22 + seg.width() + 10, y)
         self.b_exit.move(w - 22 - self.b_exit.width(), y)
         self.b_skip.move(self.b_exit.x() - 8 - self.b_skip.width(), y)
 
@@ -2110,20 +2316,9 @@ class GameBar(QWidget):
         self.new_target()
         self.window().setFocus()
 
-    def toggle_hints(self):
-        self.hints = not self.hints
-        self.b_hint.active = self.hints
-        self.b_hint.setText(tr("g_hints_on") if self.hints else tr("g_hints_off"))
-        self.place()
-        self.tree.override_letters = self.hints
-        self.tree.update()
-        self.window().setFocus()
-
     def start(self):
         self.active = True
         self.score = self.miss = 0
-        self.hints = False
-        self.toggle_hints()                  # -> включит подсказки и обновит дерево
         self.show()
         self.place()
         self.new_target()
@@ -2131,8 +2326,6 @@ class GameBar(QWidget):
     def stop(self):
         self.active = False
         self.hide()
-        self.tree.override_letters = None
-        self.tree.update()
 
     def lang_changed(self):
         if self.active:
@@ -2334,20 +2527,20 @@ class MainWindow(QWidget):
         self.lang.set_disabled(("NUM", "SYM") if self.st["combo"] else ())
         self.lang._fade_step(1.0)
         head.addSpacing(8)
-        self.btn_combo = FlatButton(icon=icon_combo, width=self.BTN_W)
+        self.btn_combo = FlatButton(icon=icon_combo, size=self.BTN_W, width=self.BTN_W)
         self.btn_combo.setToolTip(tr("tip_combo"))
         self.btn_combo.active = bool(self.st["combo"])
         head.addWidget(self.btn_combo, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addSpacing(self.BTN_GAP)
-        self.btn_letters = FlatButton(icon=icon_eye, width=self.BTN_W)
+        self.btn_letters = FlatButton(icon=icon_eye, size=self.BTN_W, width=self.BTN_W)
         self.btn_letters.setToolTip(tr("tip_letters"))
         head.addWidget(self.btn_letters, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addSpacing(self.BTN_GAP)
-        self.btn_game = FlatButton(icon=icon_gamepad, width=self.BTN_W)
+        self.btn_game = FlatButton(icon=icon_gamepad, size=self.BTN_W, width=self.BTN_W)
         self.btn_game.setToolTip(tr("tip_game"))
         head.addWidget(self.btn_game, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addSpacing(self.BTN_GAP)
-        self.gear = FlatButton(icon=icon_sliders, width=self.BTN_W)
+        self.gear = FlatButton(icon=icon_sliders, size=self.BTN_W, width=self.BTN_W)
         self.gear.setToolTip(tr("tip_settings"))
         head.addWidget(self.gear, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(head)
@@ -2367,6 +2560,8 @@ class MainWindow(QWidget):
         root.addWidget(self.hint)
 
         self.lang.changed.connect(self.set_lang)
+        self.lang.scrubbed.connect(self._lang_scrub)
+        self.lang.scrub_done.connect(self.tree.end_scrub)
         self.gear.clicked.connect(self.open_settings)
         self.btn_game.clicked.connect(self.toggle_game)
         self.btn_combo.clicked.connect(self.toggle_combo)
@@ -2454,6 +2649,27 @@ class MainWindow(QWidget):
         self.game.lang_changed()
         self.setFocus()
 
+    def _tree_key(self, k):
+        return "ALL_" + k if self.st["combo"] and k in ("EN", "RU") else k
+
+    def _lang_scrub(self, pos):
+        """Переключатель тащат: дерево целиком следует за ползунком (между двумя соседними деревьями)."""
+        keys = [self._tree_key(k) for k, _ in self.lang.items]
+        n = len(keys) - 1
+        pos = max(0.0, min(float(n), pos))
+        i = min(n - 1, int(pos))
+        self.tree.scrub(keys[i], keys[i + 1], pos - i)
+
+    def _hotkey_lang(self, idx):
+        keys = [k for k, _ in self.lang.items]
+        if idx >= len(keys):
+            return
+        key = keys[idx]
+        if key in self.lang.disabled or key == self.lang.value or self.lang._dragging or self.lang._scrubbing:
+            return
+        self.lang.set_value(key)
+        self.set_lang(key)
+
     def toggle_combo(self):
         """Буквы + цифры + символы в одном дереве; в этом режиме меняется только язык букв."""
         self.engine.abort()
@@ -2474,7 +2690,6 @@ class MainWindow(QWidget):
         if self.game.active:
             self.game.stop()
             self.btn_game.active = False
-            self.btn_letters.setEnabled(True)
             self.setMinimumHeight(self.min_h)
             if self._grew:
                 self.resize(self.width(), self.height() - self._grew)
@@ -2488,7 +2703,6 @@ class MainWindow(QWidget):
                 self.resize(self.width(), self.height() + self._grew)
             self.game.start()
             self.btn_game.active = True
-            self.btn_letters.setEnabled(False)      # в игре буквами управляет её кнопка подсказок
         self.btn_game.update()
         self.setFocus()
 
@@ -2566,6 +2780,9 @@ class MainWindow(QWidget):
             e.accept()
         elif mode != "ctrlalt" and k in KEYS[mode][1]:
             self.engine.press()
+            e.accept()
+        elif k in LANG_HOTKEYS and not bool(e.modifiers() & MOD_BLOCK) and not self.engine.pressed:
+            self._hotkey_lang(LANG_HOTKEYS[k])
             e.accept()
         elif k == K_SPACE:
             self.engine.space_press()
