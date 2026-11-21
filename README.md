@@ -1,4 +1,6 @@
 # PhMorse
 Desktop app for typing and learning Morse code
 
-<img width="602" height="932" alt="PhMorse_uT6JKDDJLx" src="https://github.com/user-attachments/assets/2915b272-154e-4bab-b9aa-a6d41043e64d" />
+<img width="602" height="932" alt="PhMorse_bEIu326yxs" src="https://github.com/user-attachments/assets/c440ce17-9048-4283-b5d2-9de7d41ccca5" />
+
+https://github.com/user-attachments/assets/bdddf374-f59b-4369-9c45-205c4d74eeac
